@@ -190,6 +190,11 @@ function drawBoard(layout, angled) {
   ]);
   gradient(defs, 'lit', [['0', 'var(--lit-top)'], ['1', 'var(--lit-bottom)']]);
   gradient(defs, 'rail', [['0', 'var(--rail-top)'], ['0.12', 'var(--rail)'], ['1', 'var(--rail-bottom)']]);
+  // Camera exposure measured in the close-up photo: the board darkens about
+  // 30% towards the bottom of the frame and a little to the left, while the
+  // lit tiles stay at full brightness.
+  gradient(defs, 'exposure-v', [['0', 'rgba(0,0,0,0)'], ['0.6', 'rgba(0,0,0,0.12)'], ['1', 'rgba(0,0,0,0.36)']]);
+  gradient(defs, 'exposure-h', [['0', 'rgba(0,0,0,0.08)'], ['1', 'rgba(0,0,0,0)']], { x1: 0, y1: 0, x2: 1, y2: 0 });
 
   el('path', { d: quad(0, 0, w, h), class: 'frame' }, base);
   for (const [col, text, align] of labels) {
@@ -207,8 +212,15 @@ function drawBoard(layout, angled) {
   }
   for (let l = 0; l < lines.length; l++) {
     for (let c = 0; c < cols; c++) {
-      el('path', { d: quad(colX(c), lineY(l), colX(c) + PANEL_W, lineY(l) + PANEL_H), fill: 'url(#panel)' }, base);
+      const d = quad(colX(c), lineY(l), colX(c) + PANEL_W, lineY(l) + PANEL_H);
+      el('path', { d, fill: 'url(#panel)' }, base);
+      // The phone camera's sharpening leaves a dark undershoot around each panel.
+      if (angled) el('path', { d, class: 'undershoot' }, base);
     }
+  }
+  if (angled) {
+    el('path', { d: quad(0, 0, w, h), fill: 'url(#exposure-v)' }, base);
+    el('path', { d: quad(0, 0, w, h), fill: 'url(#exposure-h)' }, base);
   }
   const byLine = lines.map((_, l) => placed.filter(p => p[3] === l));
   byLine.forEach(row => {
@@ -217,8 +229,6 @@ function drawBoard(layout, angled) {
 
   const overlay = el('svg', { viewBox, class: 'overlay', 'aria-hidden': 'true' });
   const odefs = el('defs', {}, overlay);
-  gradient(odefs, 'falloff', [['0', 'rgba(0,0,0,0)'], ['0.75', 'rgba(0,0,0,0.06)'], ['1', 'rgba(0,0,0,0.22)']],
-    { cx: 0.5, cy: 0.4, r: 0.8 }, 'radialGradient');
   byLine.forEach((row, l) => {
     if (!row.length) return;
     const clip = el('clipPath', { id: `lit-${l}` }, odefs);
@@ -229,7 +239,6 @@ function drawBoard(layout, angled) {
     }).join('')).join('');
     el('path', { d, class: 'seam', 'clip-path': `url(#lit-${l})` }, overlay);
   });
-  el('path', { d: quad(0, 0, w, h), fill: 'url(#falloff)' }, overlay);
 
   return { base, overlay, view, placed };
 }
@@ -401,6 +410,7 @@ export function mount(container, live, hdrToggle, viewToggle) {
     last = key;
     const layout = wide ? wideLayout(list) : narrowLayout(list, cols);
     drawn = drawBoard(layout, angled);
+    container.classList.toggle('camera', angled);
     host.replaceChildren(drawn.base);
     overlayHost.replaceChildren(drawn.overlay);
     clipToBoard();
