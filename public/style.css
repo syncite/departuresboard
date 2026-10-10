@@ -52,16 +52,6 @@ html, body {
   stroke-width: 0.45;
 }
 
-/* On phones the board is shown at twice the fitted size; scroll sideways. */
-@media (max-width: 700px) {
-  .board {
-    overflow-x: auto;
-    -webkit-overflow-scrolling: touch;
-    margin: 0 -16px;
-  }
-  .board svg { width: 200%; }
-}
-
 .note {
   margin-top: 14px;
   font-size: 12px;

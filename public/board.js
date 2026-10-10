@@ -3,17 +3,6 @@ import { sydneyNow, upcoming, hhmm } from './data.js';
 
 const SVG_NS = 'http://www.w3.org/2000/svg';
 
-// Character grid: every train takes two lines, as on the SNCB boards.
-const FIELDS = {
-  time: { start: 0, len: 5 },
-  dest: { start: 6, len: 24 },
-  line: { start: 31, len: 3 },
-  plat: { start: 35, len: 2 },
-};
-const COLS = 37;
-const TRAINS = 7;
-const LINES = TRAINS * 2;
-
 // Geometry, in SVG user units, measured from a head-on photo of the board at
 // Brussel-Zuid. U is one glyph-grid unit (a narrow tile column is 1 U wide).
 const U = 2.6;
@@ -27,11 +16,20 @@ const HEAD_H = 46;
 const GLYPH_X = (PANEL_W - GLYPH_W * U) / 2;
 const GLYPH_Y = 1.8 * U;
 const RADIUS = 0.6 * U;              // rounding on curved corners
+const PITCH = PANEL_W + DIVIDER;
 
-const colX = c => PAD_X + c * (PANEL_W + DIVIDER);
+// The full board is 37 characters wide with two lines per train, as on the
+// SNCB boards. Narrow screens get a reflowed board instead: characters at
+// least NARROW_PITCH CSS pixels apart, with text wrapped onto extra lines.
+const WIDE_COLS = 37;
+const WIDE_TRAINS = 7;
+const NARROW_TRAINS = 4;
+const NARROW_PITCH = 38;
+const MIN_COLS = 8;
+
+const colX = c => PAD_X + c * PITCH;
 const lineY = l => HEAD_H + RAIL + l * (PANEL_H + RAIL);
-const WIDTH = colX(COLS - 1) + PANEL_W + PAD_X;
-const HEIGHT = lineY(LINES) + RAIL;
+const boardWidth = cols => colX(cols - 1) + PANEL_W + PAD_X;
 
 function el(name, attrs = {}, parent) {
   const node = document.createElementNS(SVG_NS, name);
@@ -104,7 +102,7 @@ function gradient(defs, id, stops, attrs = { x1: 0, y1: 0, x2: 0, y2: 1 }, type 
   for (const [offset, color] of stops) el('stop', { offset, style: `stop-color: ${color}` }, g);
 }
 
-function buildFrame(svg) {
+function buildDefs(svg) {
   const defs = el('defs', {}, svg);
   // Panels are lit from inside but sit in the shadow of the rail above them.
   gradient(defs, 'panel', [
@@ -116,7 +114,6 @@ function buildFrame(svg) {
     { cx: 0.5, cy: 0.35, r: 0.8 }, 'radialGradient');
   gradient(defs, 'sheen', [['0', 'rgba(255,240,200,0.07)'], ['0.45', 'rgba(255,240,200,0)']],
     { x1: 0, y1: 0, x2: 0.6, y2: 1 });
-
   for (const [ch, def] of Object.entries(GLYPHS)) {
     const d = glyphPath(def);
     const clip = el('clipPath', { id: `c-${glyphId(ch)}` }, defs);
@@ -125,58 +122,105 @@ function buildFrame(svg) {
     el('path', { d, fill: 'url(#lit)' }, g);
     el('path', { d: SEAMS, class: 'seam', 'clip-path': `url(#c-${glyphId(ch)})` }, g);
   }
-
-  el('rect', { x: 0, y: 0, width: WIDTH, height: HEIGHT, class: 'frame' }, svg);
-
-  const label = (text, x, anchor) => {
-    el('text', { x, y: HEAD_H - 14, 'text-anchor': anchor, class: 'label' }, svg).textContent = text;
-  };
-  label('TIME', colX(FIELDS.time.start), 'start');
-  label('DESTINATION', colX(FIELDS.dest.start), 'start');
-  label('LINE', colX(FIELDS.line.start), 'start');
-  label('PLAT', colX(FIELDS.plat.start + FIELDS.plat.len - 1) + PANEL_W, 'end');
-
-  const back = el('g', {}, svg);
-  for (let l = 0; l < LINES; l++) {
-    el('rect', { x: 0, y: lineY(l) - RAIL, width: WIDTH, height: RAIL, fill: 'url(#rail)' }, back);
-    for (let c = 0; c < COLS; c++) {
-      el('rect', { x: colX(c), y: lineY(l), width: PANEL_W, height: PANEL_H, fill: 'url(#panel)' }, back);
-    }
-  }
-  el('rect', { x: 0, y: lineY(LINES) - RAIL, width: WIDTH, height: RAIL, fill: 'url(#rail)' }, back);
-
-  const layer = el('g', {}, svg);
-  // Broad room lighting: a soft sheen from the upper left and falloff at the edges.
-  el('rect', { x: 0, y: HEAD_H, width: WIDTH, height: HEIGHT - HEAD_H, fill: 'url(#sheen)', 'pointer-events': 'none' }, svg);
-  el('rect', { x: 0, y: 0, width: WIDTH, height: HEIGHT, fill: 'url(#falloff)', 'pointer-events': 'none' }, svg);
-  return layer;
 }
 
-function put(layer, line, col, text) {
-  [...text].forEach((ch, i) => {
-    if (ch === ' ' || !GLYPHS[ch] || col + i >= COLS) return;
-    el('use', {
-      href: `#${glyphId(ch)}`,
-      x: f(colX(col + i) + GLYPH_X),
-      y: f(lineY(line) + GLYPH_Y),
-    }, layer);
+/**
+ * Draws a board `cols` characters wide. `lines` is a list of text runs per
+ * line, each [column, text]; `labels` are header captions [column, text, align].
+ */
+function drawBoard({ cols, lines, labels, labelSize }) {
+  const width = boardWidth(cols);
+  const height = lineY(lines.length) + RAIL;
+  const svg = el('svg', {
+    viewBox: `0 0 ${f(width)} ${f(height)}`, role: 'img', 'aria-labelledby': 'board-title',
   });
+  el('title', { id: 'board-title' }, svg).textContent = 'Departures from Central';
+  buildDefs(svg);
+
+  el('rect', { x: 0, y: 0, width, height, class: 'frame' }, svg);
+  for (const [col, text, align] of labels) {
+    const x = align === 'end' ? colX(col) + PANEL_W : colX(col);
+    el('text', {
+      x, y: HEAD_H - 14, 'text-anchor': align, class: 'label', style: `font-size: ${labelSize}px`,
+    }, svg).textContent = text;
+  }
+
+  for (let l = 0; l <= lines.length; l++) {
+    el('rect', { x: 0, y: lineY(l) - RAIL, width, height: RAIL, fill: 'url(#rail)' }, svg);
+  }
+  for (let l = 0; l < lines.length; l++) {
+    for (let c = 0; c < cols; c++) {
+      el('rect', { x: colX(c), y: lineY(l), width: PANEL_W, height: PANEL_H, fill: 'url(#panel)' }, svg);
+    }
+  }
+
+  lines.forEach((runs, l) => {
+    for (const [col, text] of runs) {
+      [...text].forEach((ch, i) => {
+        if (ch === ' ' || !GLYPHS[ch] || col + i >= cols) return;
+        el('use', { href: `#${glyphId(ch)}`, x: f(colX(col + i) + GLYPH_X), y: f(lineY(l) + GLYPH_Y) }, svg);
+      });
+    }
+  });
+
+  // Broad room lighting: a soft sheen from the upper left and falloff at the edges.
+  el('rect', { x: 0, y: HEAD_H, width, height: height - HEAD_H, fill: 'url(#sheen)' }, svg);
+  el('rect', { x: 0, y: 0, width, height, fill: 'url(#falloff)' }, svg);
+  return svg;
 }
 
 const fit = (text, len) => text.slice(0, len);
 const right = (text, len) => fit(text, len).padStart(len, ' ');
 
-function render(layer, list) {
-  layer.replaceChildren();
-  list.forEach((t, i) => {
-    const top = i * 2;
-    put(layer, top, FIELDS.time.start, hhmm(t.time));
-    put(layer, top, FIELDS.dest.start, fit(t.dest, FIELDS.dest.len));
-    put(layer, top, FIELDS.line.start, fit(t.line, FIELDS.line.len));
-    put(layer, top, FIELDS.plat.start, right(t.plat, FIELDS.plat.len));
-    // Remarks sit on the second line, under the destination.
-    put(layer, top + 1, FIELDS.dest.start, fit(t.via, FIELDS.dest.len));
-  });
+/** Full-width board: time, destination, line and platform, remarks below. */
+function wideLayout(list) {
+  const lines = list.flatMap(t => [
+    [[0, hhmm(t.time)], [6, fit(t.dest, 24)], [31, fit(t.line, 3)], [35, right(t.plat, 2)]],
+    [[6, fit(t.via, 24)]],
+  ]);
+  const labels = [[0, 'TIME', 'start'], [6, 'DESTINATION', 'start'], [31, 'LINE', 'start'], [36, 'PLAT', 'end']];
+  return { cols: WIDE_COLS, lines, labels, labelSize: 21 };
+}
+
+/** Word-wraps text into lines of at most `width` characters. */
+function wrap(text, width) {
+  const out = [];
+  let line = '';
+  for (let word of text.split(' ')) {
+    // Words too long for a line break with a hyphen.
+    while (word.length > width) {
+      if (line) { out.push(line); line = ''; }
+      out.push(`${word.slice(0, width - 1)}-`);
+      word = word.slice(width - 1);
+    }
+    if (!word) continue;
+    if (!line) line = word;
+    else if (line.length + 1 + word.length <= width) line += ` ${word}`;
+    else { out.push(line); line = word; }
+  }
+  if (line) out.push(line);
+  return out;
+}
+
+/**
+ * Narrow board: the time and line on the first row with the platform at the
+ * right when it fits, then the destination and remarks wrapped beneath.
+ */
+function narrowLayout(list, cols) {
+  const lineCol = 6;
+  const platFits = cols >= lineCol + 3 + 1 + 2;
+  const lines = [];
+  for (const t of list) {
+    const first = [[0, hhmm(t.time)], [lineCol, fit(t.line, cols - lineCol)]];
+    if (platFits) first.push([cols - 2, right(t.plat, 2)]);
+    lines.push(first);
+    for (const row of wrap(t.dest, cols)) lines.push([[0, row]]);
+    for (const row of wrap(t.via, cols)) lines.push([[0, row]]);
+    if (!platFits) lines.push([[0, `Plat ${t.plat}`]]);
+  }
+  const labels = [[0, 'TIME', 'start'], [lineCol, 'LINE', 'start']];
+  if (platFits) labels.push([cols - 1, 'PLAT', 'end']);
+  return { cols, lines, labels, labelSize: 28 };
 }
 
 function describe(list) {
@@ -184,24 +228,23 @@ function describe(list) {
 }
 
 export function mount(container, live) {
-  const svg = el('svg', {
-    viewBox: `0 0 ${WIDTH} ${HEIGHT}`, role: 'img', 'aria-labelledby': 'board-title',
-    preserveAspectRatio: 'xMidYMin meet',
-  });
-  el('title', { id: 'board-title' }, svg).textContent = 'Departures from Central';
-  container.appendChild(svg);
-  const layer = buildFrame(svg);
-
   let last = '';
-  const tick = () => {
-    const list = upcoming(sydneyNow().minutes, TRAINS);
-    const key = list.map(t => t.time + t.dest).join('|');
-    if (key !== last) {
-      last = key;
-      render(layer, list);
-      if (live) live.textContent = describe(list);
-    }
+  const update = () => {
+    const width = container.clientWidth || window.innerWidth;
+    const wide = width / WIDE_COLS >= NARROW_PITCH / 2;
+    const cols = wide ? WIDE_COLS : Math.max(MIN_COLS, Math.floor(width / NARROW_PITCH));
+    const list = upcoming(sydneyNow().minutes, wide ? WIDE_TRAINS : NARROW_TRAINS);
+    const key = `${cols}|${list.map(t => t.time + t.dest).join('|')}`;
+    if (key === last) return;
+    last = key;
+    container.replaceChildren(drawBoard(wide ? wideLayout(list) : narrowLayout(list, cols)));
+    if (live) live.textContent = describe(list);
   };
-  tick();
-  setInterval(tick, 5000);
+  update();
+  setInterval(update, 5000);
+  let pending;
+  window.addEventListener('resize', () => {
+    clearTimeout(pending);
+    pending = setTimeout(update, 150);
+  });
 }
