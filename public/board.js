@@ -441,20 +441,21 @@ function cricketLayout(data, cols, total) {
     data.batters.forEach((b, i) => rows.push(fitLine(`${i ? ' ' : '*'}${b.name.split(' ').at(-1)} ${b.runs} (${b.balls})`)));
     if (data.bowler) {
       const b = data.bowler;
-      rows.push(fitLine(`${b.name.split(' ').at(-1)} ${b.overs}-${b.maidens}-${b.runs}-${b.wickets}`));
+      const name = b.name.split(' ').at(-1);
+      const full = `${name} ${b.overs}-${b.maidens}-${b.runs}-${b.wickets}`;
+      rows.push(fitLine(full.length <= cols ? full : `${name} ${b.wickets}-${b.runs}`));
     }
     if (data.thisOver.length) rows.push(fitLine(`Over: ${data.thisOver.join(' ')}`));
     rows.push('');
-    // Play by play, newest first: the last ball with its commentary, then
-    // the balls before it, for as many lines as the screen allows.
-    data.balls.forEach((ball, i) => {
-      if (rows.length >= total) return;
-      // On narrow boards drop "Bowler to Batter," and keep the result.
+    // Play by play, newest first: each ball's result, then its commentary
+    // ("Length outside off, let go"), for as many lines as the screen allows.
+    for (const ball of data.balls) {
+      if (rows.length >= total) break;
       const short = boardText(ball.short).join(' ');
       const brief = cols < 30 ? short.replace(/^.*?,\s*/, '') : short;
       rows.push(...wrap(`${ball.over} ${brief}`, cols));
-      if (i === 0 && ball.text) rows.push(...wrapAll(boardText(ball.text), cols).slice(0, 3));
-    });
+      if (ball.text) rows.push(...wrapAll(boardText(ball.text), cols).slice(0, cols < 30 ? 3 : 2));
+    }
   }
   rows.length = Math.min(rows.length, total);
   while (rows.length < total) rows.push('');
