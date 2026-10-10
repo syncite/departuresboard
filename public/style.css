@@ -1,17 +1,18 @@
 :root {
-  --frame: #110c08;
-  --label: #d3c6b0;
-  --panel-shadow: #2a1505;
-  --panel-top: #7c4813;
-  --panel-mid: #6a3c0f;
-  --panel-bottom: #4c2a09;
-  --lit-top: #f8ec5e;
-  --lit-bottom: #f0dc48;
-  --seam-rgb: 70, 38, 4;
-  --rail-top: #33271c;
-  --rail: #16100b;
-  --rail-bottom: #0c0805;
-  --page: #0c0805;
+  /* Sampled from a close-up photo of the board at Brussel-Zuid. */
+  --frame: #0f1114;
+  --label: #c9c9c6;
+  --panel-shadow: #3a250b;
+  --panel-top: #8f611f;
+  --panel-mid: #82551b;
+  --panel-bottom: #6d4715;
+  --lit-top: #e0e149;
+  --lit-bottom: #d6d643;
+  --seam-rgb: 160, 140, 45;
+  --rail-top: #24272b;
+  --rail: #121417;
+  --rail-bottom: #0c0d0f;
+  --page: #08090a;
 }
 
 * { box-sizing: border-box; }
@@ -20,7 +21,7 @@ html, body {
   margin: 0;
   min-height: 100%;
   background:
-    radial-gradient(ellipse 90% 60% at 50% 28%, rgba(255, 150, 50, 0.16), rgba(255, 150, 50, 0) 70%),
+    radial-gradient(ellipse 90% 60% at 50% 30%, rgba(255, 170, 70, 0.07), rgba(255, 170, 70, 0) 70%),
     var(--page);
   background-attachment: fixed;
   color: var(--label);
@@ -31,11 +32,6 @@ html, body {
   max-width: 1280px;
   margin: 0 auto;
   padding: clamp(12px, 3vw, 40px) 16px;
-}
-
-.board {
-  /* Warm light spilling from the board onto the wall around it. */
-  box-shadow: 0 0 60px 6px rgba(255, 160, 50, 0.16), 0 0 160px 30px rgba(255, 130, 30, 0.08);
 }
 
 .board { position: relative; }
@@ -77,21 +73,9 @@ html, body {
 .board .seam {
   fill: none;
   stroke: rgba(var(--seam-rgb), var(--seam-alpha, 0.3));
-  stroke-width: 0.45;
+  stroke-width: 0.55;
 }
 
-
-/* Richer yellows and oranges on wide-gamut (P3) screens. */
-@supports (color: color(display-p3 1 1 1)) {
-  :root {
-    --panel-shadow: color(display-p3 0.16 0.08 0.02);
-    --panel-top: color(display-p3 0.5 0.285 0.06);
-    --panel-mid: color(display-p3 0.43 0.235 0.045);
-    --panel-bottom: color(display-p3 0.31 0.165 0.03);
-    --lit-top: color(display-p3 0.99 0.93 0.32);
-    --lit-bottom: color(display-p3 0.96 0.86 0.24);
-  }
-}
 
 .note {
   display: flex;
@@ -127,3 +111,5 @@ html, body {
   clip: rect(0 0 0 0);
   white-space: nowrap;
 }
+
+.toggles { display: inline-flex; gap: 8px; }

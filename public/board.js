@@ -3,19 +3,20 @@ import { sydneyNow, upcoming, hhmm } from './data.js';
 
 const SVG_NS = 'http://www.w3.org/2000/svg';
 
-// Geometry, in SVG user units, measured from a head-on photo of the board at
-// Brussel-Zuid. U is one glyph-grid unit (a narrow tile column is 1 U wide).
+// Geometry, in board units, measured from photos of the board at Brussel-Zuid.
+// U is one glyph-grid unit (a narrow tile column is 1 U wide).
 const U = 2.6;
 const ROW = 1.65 * U;                // one tile row
 const PANEL_W = 8.9 * U;
 const PANEL_H = 18.4 * U;
-const DIVIDER = 2.1 * U;             // black gap between character panels
+const DIVIDER = 2.8 * U;             // black gap between character panels
 const RAIL = 7.6 * U;                // black rail between character lines
 const PAD_X = 8;
 const HEAD_H = 46;
 const GLYPH_X = (PANEL_W - GLYPH_W * U) / 2;
 const GLYPH_Y = 1.8 * U;
 const RADIUS = 0.8 * U;              // rounding on curved corners
+const ARC_STEPS = 5;                 // segments per rounded corner
 const PITCH = PANEL_W + DIVIDER;
 
 // The full board is 37 characters wide with two lines per train, as on the
@@ -31,6 +32,15 @@ const colX = c => PAD_X + c * PITCH;
 const lineY = l => HEAD_H + RAIL + l * (PANEL_H + RAIL);
 const boardWidth = cols => colX(cols - 1) + PANEL_W + PAD_X;
 
+// The camera angle of the close-up photo: where the board's corners land, as
+// fractions of the image (top-left, top-right, bottom-right, bottom-left),
+// and how much the photo foreshortens the board's height. Measured by fitting
+// a homography to the character panels in the photo.
+const ANGLED = {
+  corners: [[0, 0.0111], [0.6806, 0], [1, 0.9846], [0.0044, 1]],
+  squash: 0.5373,
+};
+
 function el(name, attrs = {}, parent) {
   const node = document.createElementNS(SVG_NS, name);
   for (const [k, v] of Object.entries(attrs)) node.setAttribute(k, v);
@@ -40,153 +50,188 @@ function el(name, attrs = {}, parent) {
 
 const f = n => +n.toFixed(2);
 
-function roundedRect(x0, y0, x1, y1, [tl, tr, br, bl]) {
-  return `M${f(x0 + tl)} ${f(y0)}H${f(x1 - tr)}` +
-    (tr ? `A${f(tr)} ${f(tr)} 0 0 1 ${f(x1)} ${f(y0 + tr)}` : '') +
-    `V${f(y1 - br)}` +
-    (br ? `A${f(br)} ${f(br)} 0 0 1 ${f(x1 - br)} ${f(y1)}` : '') +
-    `H${f(x0 + bl)}` +
-    (bl ? `A${f(bl)} ${f(bl)} 0 0 1 ${f(x0)} ${f(y1 - bl)}` : '') +
-    `V${f(y0 + tl)}` +
-    (tl ? `A${f(tl)} ${f(tl)} 0 0 1 ${f(x0 + tl)} ${f(y0)}` : '') + 'Z';
+/**
+ * A view of a w x h board: either flat, or the photo's camera angle as a
+ * projective map from the board rectangle onto a quadrilateral. Straight lines
+ * stay straight, so everything is drawn as projected polygons and stays vector.
+ */
+function makeView(w, h, angled) {
+  if (!angled) return { width: w, height: h, p: (x, y) => [x, y] };
+  const height = h * ANGLED.squash;
+  const [[x0, y0], [x1, y1], [x2, y2], [x3, y3]] = ANGLED.corners.map(([cx, cy]) => [cx * w, cy * height]);
+  // Unit square to quad (Heckbert).
+  const sx = x0 - x1 + x2 - x3, sy = y0 - y1 + y2 - y3;
+  const dx1 = x1 - x2, dx2 = x3 - x2, dy1 = y1 - y2, dy2 = y3 - y2;
+  const den = dx1 * dy2 - dx2 * dy1;
+  const g = (sx * dy2 - dx2 * sy) / den, hh = (dx1 * sy - sx * dy1) / den;
+  const a = x1 - x0 + g * x1, b = x3 - x0 + hh * x3, d = y1 - y0 + g * y1, e = y3 - y0 + hh * y3;
+  const p = (x, y) => {
+    const u = x / w, v = y / h, q = g * u + hh * v + 1;
+    return [(a * u + b * v + x0) / q, (d * u + e * v + y0) / q];
+  };
+  return { width: w, height, p };
 }
 
-// Every subpath winds clockwise so overlapping shapes fill rather than cancel.
-function polygon(pts) {
-  const area = pts.reduce((a, [x, y], i) => {
+// One closed polygon as path data, wound clockwise on screen so overlapping
+// shapes fill rather than cancel.
+function ring(pts) {
+  const area = pts.reduce((s, [x, y], i) => {
     const [nx, ny] = pts[(i + 1) % pts.length];
-    return a + (x * ny - nx * y);
+    return s + (x * ny - nx * y);
   }, 0);
   const ordered = area < 0 ? [...pts].reverse() : pts;
   return `M${ordered.map(([x, y]) => `${f(x)} ${f(y)}`).join('L')}Z`;
 }
 
-const CORNERS = ['TL', 'TR', 'BR', 'BL'];
+const project = (view, pts, ox = 0, oy = 0, k = 1) =>
+  pts.map(([x, y]) => view.p(x + ox, y + oy)).map(([x, y]) => [x * k, y * k]);
 
-/**
- * The lit tiles of a glyph as one path. By default in glyph units; `ox`, `oy`
- * and `k` place and scale it, e.g. into CSS pixels for the HDR clip path.
- */
-function glyphPath({ rows, round = {}, polys = [] }, ox = 0, oy = 0, k = 1) {
+function rectPts(x0, y0, x1, y1) {
+  return [[x0, y0], [x1, y0], [x1, y1], [x0, y1]];
+}
+
+// A rectangle with some corners rounded, as points (arcs flattened finely).
+function roundedRectPts(x0, y0, x1, y1, [tl, tr, br, bl]) {
+  const pts = [];
+  const arc = (cx, cy, r, start) => {
+    for (let i = 0; i <= ARC_STEPS; i++) {
+      const t = start + (i / ARC_STEPS) * (Math.PI / 2);
+      pts.push([cx + r * Math.cos(t), cy + r * Math.sin(t)]);
+    }
+  };
+  if (tl) arc(x0 + tl, y0 + tl, tl, Math.PI); else pts.push([x0, y0]);
+  if (tr) arc(x1 - tr, y0 + tr, tr, -Math.PI / 2); else pts.push([x1, y0]);
+  if (br) arc(x1 - br, y1 - br, br, 0); else pts.push([x1, y1]);
+  if (bl) arc(x0 + bl, y1 - bl, bl, Math.PI / 2); else pts.push([x0, y1]);
+  return pts;
+}
+
+const CORNERS = ['TL', 'TR', 'BR', 'BL'];
+const glyphCache = new Map();
+
+/** The lit tiles of a glyph as polygons in board units, origin at its top left. */
+function glyphPolys(ch) {
+  if (glyphCache.has(ch)) return glyphCache.get(ch);
+  const { rows, round = {}, polys = [] } = GLYPHS[ch];
   const lit = (r, c) => r >= 0 && r < ROWS && c >= 0 && c < 5 && rows[r][c] !== '.';
-  let d = '';
+  const out = [];
   for (let r = 0; r < ROWS; r++) {
     for (let c = 0; c < 5; c++) {
       const code = rows[r][c];
       if (code === '.') continue;
-      const x0 = ox + COL_X[c] * U * k, x1 = ox + COL_X[c + 1] * U * k;
-      const y0 = oy + r * ROW * k, y1 = oy + (r + 1) * ROW * k;
-      if (code === 'd') { d += polygon([[x1, y0], [x1, y1], [x0, y1]]); continue; }
-      if (code === 'a') { d += polygon([[x0, y0], [x1, y0], [x0, y1]]); continue; }
+      const x0 = COL_X[c] * U, x1 = COL_X[c + 1] * U;
+      const y0 = r * ROW, y1 = (r + 1) * ROW;
+      if (code === 'd') { out.push([[x1, y0], [x1, y1], [x0, y1]]); continue; }
+      if (code === 'a') { out.push([[x0, y0], [x1, y0], [x0, y1]]); continue; }
       const free = [
         !lit(r - 1, c) && !lit(r, c - 1), !lit(r - 1, c) && !lit(r, c + 1),
         !lit(r + 1, c) && !lit(r, c + 1), !lit(r + 1, c) && !lit(r, c - 1),
       ];
       const explicit = round[`${r},${c}`] || '';
       const max = Math.min(y1 - y0, x1 - x0) / 2;
-      d += roundedRect(x0, y0, x1, y1, CORNERS.map((key, i) =>
-        ((code === 'o' && free[i]) || explicit.includes(key) ? Math.min(RADIUS * k, max) : 0)));
+      out.push(roundedRectPts(x0, y0, x1, y1, CORNERS.map((key, i) =>
+        ((code === 'o' && free[i]) || explicit.includes(key) ? Math.min(RADIUS, max) : 0))));
     }
   }
-  for (const poly of polys) d += polygon(poly.map(([x, y]) => [ox + x * U * k, oy + y * ROW * k]));
-  return d;
+  for (const poly of polys) out.push(poly.map(([x, y]) => [x * U, y * ROW]));
+  glyphCache.set(ch, out);
+  return out;
 }
 
-const glyphId = ch => `g-${ch.codePointAt(0).toString(16)}`;
-
-// Thin dark seams between tiles, drawn over each glyph and clipped to it, so
-// straight strokes and diagonals alike show the mosaic grid.
-const SEAMS = [
-  ...COL_X.slice(1, -1).map(x => `M${f(x * U)} 0V${f(ROWS * ROW)}`),
-  ...Array.from({ length: ROWS - 1 }, (_, r) => `M0 ${f((r + 1) * ROW)}H${f(GLYPH_W * U)}`),
-].join('');
+// Tile seam lines of one glyph box, as segments in board units.
+const SEAM_SEGMENTS = [
+  ...COL_X.slice(1, -1).map(x => [[x * U, 0], [x * U, ROWS * ROW]]),
+  ...Array.from({ length: ROWS - 1 }, (_, r) => [[0, (r + 1) * ROW], [GLYPH_W * U, (r + 1) * ROW]]),
+];
 
 function gradient(defs, id, stops, attrs = { x1: 0, y1: 0, x2: 0, y2: 1 }, type = 'linearGradient') {
   const g = el(type, { id, ...attrs }, defs);
   for (const [offset, color] of stops) el('stop', { offset, style: `stop-color: ${color}` }, g);
 }
 
-function buildBaseDefs(svg) {
-  const defs = el('defs', {}, svg);
-  // Panels are lit from inside but sit in the shadow of the rail above them.
-  gradient(defs, 'panel', [
-    ['0', 'var(--panel-shadow)'], ['0.09', 'var(--panel-top)'], ['0.55', 'var(--panel-mid)'], ['1', 'var(--panel-bottom)'],
-  ]);
-  gradient(defs, 'lit', [['0', 'var(--lit-top)'], ['1', 'var(--lit-bottom)']]);
-  gradient(defs, 'rail', [['0', 'var(--rail-top)'], ['0.12', 'var(--rail)'], ['1', 'var(--rail-bottom)']]);
-  for (const [ch, def] of Object.entries(GLYPHS)) {
-    el('path', { id: glyphId(ch), d: glyphPath(def), fill: 'url(#lit)' }, defs);
-  }
-}
-
-function buildOverlayDefs(svg) {
-  const defs = el('defs', {}, svg);
-  gradient(defs, 'falloff', [['0', 'rgba(0,0,0,0)'], ['0.7', 'rgba(0,0,0,0.08)'], ['1', 'rgba(0,0,0,0.28)']],
-    { cx: 0.5, cy: 0.35, r: 0.8 }, 'radialGradient');
-  gradient(defs, 'sheen', [['0', 'rgba(255,200,120,0.09)'], ['0.5', 'rgba(255,200,120,0)']],
-    { x1: 0, y1: 0, x2: 0.6, y2: 1 });
-  for (const [ch, def] of Object.entries(GLYPHS)) {
-    const clip = el('clipPath', { id: `c-${glyphId(ch)}` }, defs);
-    el('path', { d: glyphPath(def) }, clip);
-    el('path', { id: `s-${glyphId(ch)}`, d: SEAMS, class: 'seam', 'clip-path': `url(#c-${glyphId(ch)})` }, defs);
-  }
-}
-
-// The characters placed by a layout, as [char, x, y] in board units.
+// The characters placed by a layout, as [char, x, y, line] in board units.
 function placements({ cols, lines }) {
   const out = [];
   lines.forEach((runs, l) => {
     for (const [col, text] of runs) {
       [...text].forEach((ch, i) => {
-        if (ch !== ' ' && GLYPHS[ch] && col + i < cols) out.push([ch, colX(col + i) + GLYPH_X, lineY(l) + GLYPH_Y]);
+        if (ch !== ' ' && GLYPHS[ch] && col + i < cols) out.push([ch, colX(col + i) + GLYPH_X, lineY(l) + GLYPH_Y, l]);
       });
     }
   });
   return out;
 }
 
+/** Path data for a set of placed glyphs, projected and scaled by k. */
+function glyphsPath(view, placed, k = 1) {
+  return placed.map(([ch, x, y]) => glyphPolys(ch).map(poly => ring(project(view, poly, x, y, k))).join('')).join('');
+}
+
 /**
- * Draws a board `cols` characters wide as two stacked SVGs: the board itself,
- * and an overlay with the tile seams and room lighting. The HDR layer, when
- * on, sits between them so the seams still cross the brighter letters.
- * `lines` is a list of text runs per line, each [column, text]; `labels` are
- * header captions [column, text, align].
+ * Draws the board as two stacked SVGs: the board itself, and an overlay with
+ * the tile seams and room lighting. The HDR layer, when on, sits between them
+ * so the seams still cross the brighter letters. `lines` is a list of text runs
+ * per line, each [column, text]; `labels` are captions [column, text, align].
  */
-function drawBoard(layout) {
+function drawBoard(layout, angled) {
   const { cols, lines, labels, labelSize } = layout;
-  const width = boardWidth(cols);
-  const height = lineY(lines.length) + RAIL;
-  const viewBox = `0 0 ${f(width)} ${f(height)}`;
+  const w = boardWidth(cols);
+  const h = lineY(lines.length) + RAIL;
+  const view = makeView(w, h, angled);
+  const viewBox = `0 0 ${f(view.width)} ${f(view.height)}`;
+  const quad = (x0, y0, x1, y1) => ring(project(view, rectPts(x0, y0, x1, y1)));
   const placed = placements(layout);
 
   const base = el('svg', { viewBox, role: 'img', 'aria-labelledby': 'board-title' });
   el('title', { id: 'board-title' }, base).textContent = 'Departures from Central';
-  buildBaseDefs(base);
-  el('rect', { x: 0, y: 0, width, height, class: 'frame' }, base);
+  const defs = el('defs', {}, base);
+  gradient(defs, 'panel', [
+    ['0', 'var(--panel-shadow)'], ['0.08', 'var(--panel-top)'], ['0.55', 'var(--panel-mid)'], ['1', 'var(--panel-bottom)'],
+  ]);
+  gradient(defs, 'lit', [['0', 'var(--lit-top)'], ['1', 'var(--lit-bottom)']]);
+  gradient(defs, 'rail', [['0', 'var(--rail-top)'], ['0.12', 'var(--rail)'], ['1', 'var(--rail-bottom)']]);
+
+  el('path', { d: quad(0, 0, w, h), class: 'frame' }, base);
   for (const [col, text, align] of labels) {
+    // Captions follow the board's local slant at their anchor point.
     const x = align === 'end' ? colX(col) + PANEL_W : colX(col);
+    const y = HEAD_H - 14;
+    const [px, py] = view.p(x, y), [ax, ay] = view.p(x + 1, y), [bx, by] = view.p(x, y + 1);
     el('text', {
-      x, y: HEAD_H - 14, 'text-anchor': align, class: 'label', style: `font-size: ${labelSize}px`,
+      'text-anchor': align, class: 'label', style: `font-size: ${labelSize}px`,
+      transform: `matrix(${f(ax - px)} ${f(ay - py)} ${f(bx - px)} ${f(by - py)} ${f(px)} ${f(py)})`,
     }, base).textContent = text;
   }
   for (let l = 0; l <= lines.length; l++) {
-    el('rect', { x: 0, y: lineY(l) - RAIL, width, height: RAIL, fill: 'url(#rail)' }, base);
+    el('path', { d: quad(0, lineY(l) - RAIL, w, lineY(l)), fill: 'url(#rail)' }, base);
   }
   for (let l = 0; l < lines.length; l++) {
     for (let c = 0; c < cols; c++) {
-      el('rect', { x: colX(c), y: lineY(l), width: PANEL_W, height: PANEL_H, fill: 'url(#panel)' }, base);
+      el('path', { d: quad(colX(c), lineY(l), colX(c) + PANEL_W, lineY(l) + PANEL_H), fill: 'url(#panel)' }, base);
     }
   }
-  for (const [ch, x, y] of placed) el('use', { href: `#${glyphId(ch)}`, x: f(x), y: f(y) }, base);
+  const byLine = lines.map((_, l) => placed.filter(p => p[3] === l));
+  byLine.forEach(row => {
+    if (row.length) el('path', { d: glyphsPath(view, row), fill: 'url(#lit)' }, base);
+  });
 
   const overlay = el('svg', { viewBox, class: 'overlay', 'aria-hidden': 'true' });
-  buildOverlayDefs(overlay);
-  for (const [ch, x, y] of placed) el('use', { href: `#s-${glyphId(ch)}`, x: f(x), y: f(y) }, overlay);
-  // Broad room lighting: a soft sheen from the upper left and falloff at the edges.
-  el('rect', { x: 0, y: HEAD_H, width, height: height - HEAD_H, fill: 'url(#sheen)' }, overlay);
-  el('rect', { x: 0, y: 0, width, height, fill: 'url(#falloff)' }, overlay);
+  const odefs = el('defs', {}, overlay);
+  gradient(odefs, 'falloff', [['0', 'rgba(0,0,0,0)'], ['0.75', 'rgba(0,0,0,0.06)'], ['1', 'rgba(0,0,0,0.22)']],
+    { cx: 0.5, cy: 0.4, r: 0.8 }, 'radialGradient');
+  byLine.forEach((row, l) => {
+    if (!row.length) return;
+    const clip = el('clipPath', { id: `lit-${l}` }, odefs);
+    el('path', { d: glyphsPath(view, row) }, clip);
+    const d = row.map(([, x, y]) => SEAM_SEGMENTS.map(([a, b]) => {
+      const [[ax, ay], [bx, by]] = project(view, [a, b], x, y);
+      return `M${f(ax)} ${f(ay)}L${f(bx)} ${f(by)}`;
+    }).join('')).join('');
+    el('path', { d, class: 'seam', 'clip-path': `url(#lit-${l})` }, overlay);
+  });
+  el('path', { d: quad(0, 0, w, h), fill: 'url(#falloff)' }, overlay);
 
-  return { base, overlay, width, placed };
+  return { base, overlay, view, placed };
 }
 
 const fit = (text, len) => text.slice(0, len);
@@ -247,28 +292,30 @@ function describe(list) {
   return list.map(t => `${hhmm(t.time)} ${t.line} to ${t.dest}, ${t.via.replace('·', 'and')}, platform ${t.plat}`).join('. ');
 }
 
-// Tile seams are barely visible from across a concourse and obvious up close,
-// so their strength follows the on-screen size of a tile row, pinch zoom included.
-function updateSeams(container) {
-  const svg = container.querySelector('svg');
-  if (!svg) return;
-  const scale = svg.getBoundingClientRect().width / svg.viewBox.baseVal.width;
-  const target = container;
+// Tile seams are faint from across a concourse and clear up close, so their
+// strength follows the on-screen size of a tile row, pinch zoom included.
+function updateSeams(container, drawn) {
+  if (!drawn) return;
+  const scale = drawn.base.getBoundingClientRect().width / drawn.view.width;
   const zoom = window.visualViewport ? window.visualViewport.scale : 1;
   const rowPx = ROW * scale * zoom;
-  const t = Math.min(1, Math.max(0, (rowPx - 6) / 30));
-  target.style.setProperty('--seam-alpha', (0.05 + 0.7 * t).toFixed(3));
+  const t = Math.min(1, Math.max(0, (rowPx - 5) / 25));
+  container.style.setProperty('--seam-alpha', (0.12 + 0.55 * t).toFixed(3));
 }
 
 /**
- * The lit tiles of a drawn board as a CSS clip path in pixels. A path clip is
- * redrawn as vectors at any zoom (a CSS mask image is not), so the HDR letters
- * stay as crisp as the board beneath them.
+ * The lit tiles as a CSS clip path in pixels. A path clip is redrawn as
+ * vectors at any zoom (a CSS mask image is not), so the HDR letters stay as
+ * crisp as the board beneath them.
  */
-function hdrClip({ placed, width }, pxWidth) {
-  const k = pxWidth / width;
-  const d = placed.map(([ch, x, y]) => glyphPath(GLYPHS[ch], x * k, y * k, k)).join('');
-  return `path('${d}')`;
+function hdrClip({ view, placed }, pxWidth) {
+  return `path('${glyphsPath(view, placed, pxWidth / view.width)}')`;
+}
+
+const VIEW_KEY = 'departures-view';
+
+function angledPreference() {
+  try { return localStorage.getItem(VIEW_KEY) !== 'flat'; } catch { return true; }
 }
 
 const HDR_KEY = 'departures-hdr';
@@ -329,42 +376,55 @@ function hdrLayer(container, toggle) {
   };
 }
 
-export function mount(container, live, toggle) {
+export function mount(container, live, hdrToggle, viewToggle) {
   const host = document.createElement('div');
   host.className = 'board-host';
   const overlayHost = document.createElement('div');
   overlayHost.className = 'overlay-host';
   container.replaceChildren(host);
-  const setClip = hdrLayer(container, toggle);
+  const setClip = hdrLayer(container, hdrToggle);
   container.appendChild(overlayHost);
+
+  let angled = angledPreference();
   let drawn = null;
+  let last = '';
   const clipToBoard = () => {
     if (drawn) setClip(hdrClip(drawn, drawn.base.getBoundingClientRect().width));
   };
-
-  let last = '';
   const update = () => {
     const width = container.clientWidth || window.innerWidth;
     const wide = width / WIDE_COLS >= NARROW_PITCH / 2;
     const cols = wide ? WIDE_COLS : Math.max(MIN_COLS, Math.floor(width / NARROW_PITCH));
     const list = upcoming(sydneyNow().minutes, wide ? WIDE_TRAINS : NARROW_TRAINS);
-    const key = `${cols}|${list.map(t => t.time + t.dest).join('|')}`;
+    const key = `${angled}|${cols}|${list.map(t => t.time + t.dest).join('|')}`;
     if (key === last) return;
     last = key;
     const layout = wide ? wideLayout(list) : narrowLayout(list, cols);
-    drawn = drawBoard(layout);
+    drawn = drawBoard(layout, angled);
     host.replaceChildren(drawn.base);
     overlayHost.replaceChildren(drawn.overlay);
     clipToBoard();
-    updateSeams(container);
+    updateSeams(container, drawn);
     if (live) live.textContent = describe(list);
   };
+  const syncViewToggle = () => {
+    if (!viewToggle) return;
+    viewToggle.textContent = angled ? 'View: angled' : 'View: flat';
+    viewToggle.setAttribute('aria-pressed', String(angled));
+  };
+  viewToggle?.addEventListener('click', () => {
+    angled = !angled;
+    try { localStorage.setItem(VIEW_KEY, angled ? 'angled' : 'flat'); } catch { /* storage unavailable */ }
+    syncViewToggle();
+    update();
+  });
+  syncViewToggle();
   update();
   setInterval(update, 5000);
   let pending;
   window.addEventListener('resize', () => {
     clearTimeout(pending);
-    pending = setTimeout(() => { update(); clipToBoard(); updateSeams(container); }, 150);
+    pending = setTimeout(() => { update(); clipToBoard(); updateSeams(container, drawn); }, 150);
   });
-  window.visualViewport?.addEventListener('resize', () => updateSeams(container));
+  window.visualViewport?.addEventListener('resize', () => updateSeams(container, drawn));
 }

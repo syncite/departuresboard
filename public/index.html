@@ -16,12 +16,15 @@
     <p class="sr-only" id="live" aria-live="polite"></p>
     <footer class="note">
       <span>Sydney Trains mock data · after the SNCB boards in Brussels</span>
-      <button type="button" class="hdr-toggle" id="hdr-toggle" aria-pressed="false">HDR glow</button>
+      <span class="toggles">
+        <button type="button" class="hdr-toggle" id="view-toggle" aria-pressed="true">View</button>
+        <button type="button" class="hdr-toggle" id="hdr-toggle" aria-pressed="false">HDR glow</button>
+      </span>
     </footer>
   </main>
   <script type="module">
     import { mount } from './board.js';
-    mount(document.getElementById('board'), document.getElementById('live'), document.getElementById('hdr-toggle'));
+    mount(document.getElementById('board'), document.getElementById('live'), document.getElementById('hdr-toggle'), document.getElementById('view-toggle'));
   </script>
 </body>
 </html>
