@@ -1,6 +1,9 @@
 {
   "name": "departures",
+  "main": "src/worker.js",
   "compatibility_date": "2025-09-01",
-  "assets": { "directory": "./public" },
+  "assets": { "directory": "./public", "binding": "ASSETS", "run_worker_first": ["/api/*"] },
+  "durable_objects": { "bindings": [{ "name": "FEED", "class_name": "Feed" }] },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Feed"] }],
   "routes": [{ "pattern": "departures.syncite.net", "custom_domain": true }]
 }

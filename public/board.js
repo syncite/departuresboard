@@ -1,5 +1,5 @@
 import { GLYPHS, COL_X, GLYPH_W, ROWS } from './glyphs.js';
-import { sydneyNow, upcoming, hhmm, remarkPages, wrap } from './data.js';
+import { wrap } from './data.js';
 
 const SVG_NS = 'http://www.w3.org/2000/svg';
 
@@ -29,8 +29,6 @@ const MIN_COLS = 8;
 const WIDE_LINES = 14;
 const NARROW_LINES = 22;
 
-// Every PAGE_MS the remarks lines flip to the next page of stops.
-const PAGE_MS = 5000;
 // One character's flip, and the wave that ripples across the board.
 const FLIP_MS = 620;
 const STAGGER_COL_MS = 24;
@@ -205,7 +203,7 @@ function drawBoard(layout, grid, angled, skip = new Set()) {
   }));
 
   const base = el('svg', { viewBox, role: 'img', 'aria-labelledby': 'board-title' });
-  el('title', { id: 'board-title' }, base).textContent = 'Departures from Central';
+  el('title', { id: 'board-title' }, base).textContent = 'Messages from Claude';
   const defs = el('defs', {}, base);
   gradient(defs, 'panel', [
     ['0', 'var(--panel-shadow)'], ['0.08', 'var(--panel-top)'], ['0.55', 'var(--panel-mid)'], ['1', 'var(--panel-bottom)'],
@@ -349,69 +347,90 @@ function drawFlips(drawn, flips, now) {
   return { running, lit };
 }
 
+// ---- Claude's messages ------------------------------------------------------
+
+const REPLACE = [
+  [/[“”„]/g, '"'], [/[‘’‚]/g, "'"], [/[–—−]/g, '-'], [/…/g, '...'], [/→/g, '>'], [/←/g, '<'],
+  [/×/g, 'x'], [/[•●▪]/g, '·'], [/\t/g, ' '],
+];
+
+/** Markdown reply → plain lines the board's font can draw. */
+function boardText(text) {
+  let t = text.replace(/```[^\n]*\n?/g, '');
+  for (const [re, to] of REPLACE) t = t.replace(re, to);
+  return t.split('\n').map(line => line
+    .replace(/^\s*#{1,6}\s*/, '')
+    .replace(/^\s*>\s?/, '')
+    .replace(/^\s*[-*+]\s+/, '· ')
+    .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1')
+    .replace(/\*\*|__|`|~~/g, '')
+    .replace(/\|/g, ' ')
+    .normalize('NFKD').replace(/[̀-ͯ]/g, '')
+    .split('').map(ch => (ch === ' ' || GLYPHS[ch] ? ch : '')).join('')
+    .replace(/ {2,}/g, ' ')
+    .trim())
+    .filter(line => line && !/^[-·:\s]+$/.test(line));
+}
+
+const wrapAll = (lines, cols) => lines.flatMap(line => wrap(line, cols));
+
+function clock(ms) {
+  return new Date(ms).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', hourCycle: 'h23' });
+}
+
+function ago(ms) {
+  const s = Math.max(0, Math.floor(ms / 1000));
+  if (s < 90) return `${s}s ago`;
+  const m = Math.floor(s / 60);
+  if (m < 90) return `${m}min ago`;
+  const h = Math.floor(m / 60);
+  return h < 36 ? `${h}h ago` : `${Math.floor(h / 24)}d ago`;
+}
+
 /**
- * A message pinned to the top of the board, wrapped across its full width,
- * followed by one blank line to set it apart from the trains.
+ * The board for a message: a ticking "Claude 19:17 · 42s ago" stamp, the
+ * headline, then the reply. Anything that does not fit pages on: the bottom
+ * row then shows "2/3 >" and its last tile is a button for the next page.
  */
-function messageLines(message, cols, maxLines) {
-  if (!message) return [];
-  return [...wrap(message, cols).slice(0, maxLines).map(row => [[0, row]]), []];
-}
-
-/** Full-width board: time, destination, line and platform, remarks below. */
-function wideLayout(list, cols, page, message = '') {
-  const lineCol = cols - 6, platCol = cols - 2;
-  const destLen = lineCol - 7;
-  const lines = messageLines(message, cols, 4);
-  for (const t of list) {
-    const dest = wrap(t.dest, destLen);
-    const pages = remarkPages(t, cols - 6, 1);
-    const block = [
-      [[0, hhmm(t.time)], [6, dest[0]], [lineCol, fit(t.line, 3)], [platCol, right(t.plat, 2)]],
-      ...dest.slice(1).map(row => [[6, row]]),
-      [[6, pages[page % pages.length][0]]],
-    ];
-    if (lines.length + block.length > WIDE_LINES) break;
-    lines.push(...block);
+function messageLayout(msg, cols, total, page, now, online) {
+  const header = [];
+  if (msg) {
+    const stamp = `Claude ${clock(msg.at)}`;
+    const age = ago(now - msg.at);
+    if (stamp.length + 3 + age.length <= cols) header.push(`${stamp} · ${age}`);
+    else if (stamp.length <= cols) header.push(stamp, age);
+    else header.push(clock(msg.at), age);
+  } else {
+    header.push('Claude');
   }
-  while (lines.length < WIDE_LINES) lines.push([]);
-  const labels = [[0, 'TIME', 'start'], [6, 'DESTINATION', 'start'], [lineCol, 'LINE', 'start'], [platCol + 1, 'PLAT', 'end']];
-  return { cols, lines, labels, labelSize: 21 };
-}
-
-const fit = (text, len) => text.slice(0, len);
-const right = (text, len) => fit(text, len).padStart(len, ' ');
-
-/**
- * Narrow board: the time and line on the first row with the platform at the
- * right when it fits, then the destination and remarks wrapped beneath.
- */
-function narrowLayout(list, cols, page, message = '') {
-  const lineCol = 6;
-  const platFits = cols >= lineCol + 3 + 1 + 2;
-  const lines = messageLines(message, cols, 6);
-  for (const t of list) {
-    const first = [[0, hhmm(t.time)], [lineCol, fit(t.line, cols - lineCol)]];
-    if (platFits) first.push([cols - 2, right(t.plat, 2)]);
-    const pages = remarkPages(t, cols, 2);
-    const remarks = pages[page % pages.length];
-    const block = [
-      first,
-      ...wrap(t.dest, cols).map(row => [[0, row]]),
-      ...[0, 1].map(i => [[0, remarks[i] || '']]),
-    ];
-    if (!platFits) block.push([[0, `Plat ${t.plat}`]]);
-    if (lines.length + block.length > NARROW_LINES) break;
-    lines.push(...block);
+  header.push('');
+  const content = !msg ? wrap('Waiting for the first message...', cols)
+    : [...(msg.headline ? [...wrapAll(boardText(msg.headline), cols), ...(msg.body ? [''] : [])] : []),
+      ...wrapAll(boardText(msg.body || ''), cols)];
+  let room = total - header.length;
+  let pages = 1;
+  if (content.length > room) {
+    room -= 1;
+    pages = Math.ceil(content.length / room);
   }
-  while (lines.length < NARROW_LINES) lines.push([]);
-  const labels = [[0, 'TIME', 'start'], [lineCol, 'LINE', 'start']];
-  if (platFits) labels.push([cols - 1, 'PLAT', 'end']);
-  return { cols, lines, labels, labelSize: 28 };
+  const p = page % pages;
+  const rows = [...header, ...content.slice(p * room, (p + 1) * room)];
+  while (rows.length < total) rows.push('');
+  if (pages > 1) rows[total - 1] = `${p + 1}/${pages} >`.padStart(cols, ' ');
+  const lines = rows.map(row => (row ? [[0, row]] : []));
+  const labels = [[0, 'CLAUDE', 'start'], [cols - 1, online ? 'LIVE' : 'OFFLINE', 'end']];
+  return { cols, lines, labels, labelSize: cols >= MIN_WIDE_COLS ? 21 : 28, pages, page: p };
 }
 
-function describe(list) {
-  return list.map(t => `${hhmm(t.time)} ${t.line} to ${t.dest}, ${t.via}, platform ${t.plat}`).join('. ');
+/** Where a tile sits on screen, as fractions of the board (for the pager button). */
+function tileBox(drawn, l, c) {
+  const pts = rectPts(colX(c), lineY(l), colX(c) + PANEL_W, lineY(l) + PANEL_H).map(([x, y]) => drawn.view.p(x, y));
+  const xs = pts.map(p => p[0]), ys = pts.map(p => p[1]);
+  return {
+    left: Math.min(...xs) / drawn.view.width, top: Math.min(...ys) / drawn.view.height,
+    width: (Math.max(...xs) - Math.min(...xs)) / drawn.view.width,
+    height: (Math.max(...ys) - Math.min(...ys)) / drawn.view.height,
+  };
 }
 
 // Tile seams are faint from across a concourse and clear up close, so their
@@ -512,10 +531,19 @@ export function mount(container, live, hdrToggle, viewToggle) {
   container.replaceChildren(host);
   const setClip = hdrLayer(container, hdrToggle);
   container.appendChild(overlayHost);
+  const pager = document.createElement('button');
+  pager.type = 'button';
+  pager.className = 'pager';
+  pager.setAttribute('aria-label', 'Next page of the message');
+  pager.hidden = true;
+  container.appendChild(pager);
   const reduceMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
 
   let angled = angledPreference();
-  let message = '';
+  let message = null;
+  let skew = 0;              // server clock minus ours
+  let online = false;
+  let page = 0;
   let drawn = null;
   let shown = null;          // { layout, grid, shape } currently on the board
   let flips = [];
@@ -528,6 +556,13 @@ export function mount(container, live, hdrToggle, viewToggle) {
     container.classList.toggle('camera', angled);
     setClip(hdrClip(drawn, drawn.base.getBoundingClientRect().width));
     updateSeams(container, drawn);
+    pager.hidden = layout.pages < 2;
+    if (!pager.hidden) {
+      const box = tileBox(drawn, drawn.lines - 1, drawn.cols - 1);
+      Object.assign(pager.style, {
+        left: `${box.left * 100}%`, top: `${box.top * 100}%`, width: `${box.width * 100}%`, height: `${box.height * 100}%`,
+      });
+    }
   };
 
   const animate = () => {
@@ -548,17 +583,19 @@ export function mount(container, live, hdrToggle, viewToggle) {
     const wideCols = Math.min(MAX_COLS, Math.floor(width / WIDE_PITCH));
     const wide = wideCols >= MIN_WIDE_COLS;
     const cols = wide ? wideCols : Math.max(MIN_COLS, Math.floor(width / NARROW_PITCH));
-    const page = Math.floor(Date.now() / PAGE_MS);
-    const list = upcoming(sydneyNow().minutes, 8);
-    const layout = wide ? wideLayout(list, cols, page, message) : narrowLayout(list, cols, page, message);
-    return { layout, grid: toGrid(layout), shape: `${angled}|${wide}|${cols}`, list };
+    const layout = messageLayout(message, cols, wide ? WIDE_LINES : NARROW_LINES, page, Date.now() + skew, online);
+    page = layout.page;
+    return { layout, grid: toGrid(layout), shape: `${angled}|${wide}|${cols}` };
   };
 
   const update = ({ instant = false } = {}) => {
     const next = build();
-    if (live) live.textContent = describe(next.list);
     const prev = shown;
     shown = next;
+    const same = prev && prev.shape === next.shape
+      && prev.layout.labels.join() === next.layout.labels.join()
+      && prev.grid.every((row, l) => row.join('') === next.grid[l].join(''));
+    if (same) return;
     if (frame) { cancelAnimationFrame(frame); frame = 0; flips = []; }
     if (!prev || prev.shape !== next.shape || instant || reduceMotion) {
       render(next.layout, next.grid);
@@ -572,11 +609,12 @@ export function mount(container, live, hdrToggle, viewToggle) {
         changed.push({ l, c, from, to: ch, start: start + c * STAGGER_COL_MS + l * STAGGER_LINE_MS + Math.random() * 30 });
       }
     }));
-    if (!changed.length) return;
     flips = changed;
     render(next.layout, next.grid, new Set(changed.map(fl => cellKey(fl.l, fl.c))));
     animate();
   };
+
+  pager.addEventListener('click', () => { page += 1; update(); });
 
   const syncViewToggle = () => {
     if (!viewToggle) return;
@@ -590,24 +628,58 @@ export function mount(container, live, hdrToggle, viewToggle) {
     update({ instant: true });
   });
   syncViewToggle();
-  update();
-  // A message for the board, published alongside the site as message.json.
-  const fetchMessage = () => fetch(`message.json?t=${Date.now()}`, { cache: 'no-store' })
-    .then(r => (r.ok ? r.json() : {}))
-    .then(({ text = '' }) => {
-      if (text === message) return;
-      message = text;
-      update();
-    })
-    .catch(() => {});
-  fetchMessage();
-  setInterval(fetchMessage, 30000);
-  // Flip on each page boundary, aligned to the wall clock.
-  const tick = () => {
+
+  const receive = data => {
+    if (data.now) skew = data.now - Date.now();
+    const next = data.message || null;
+    if (next?.id !== message?.id || next?.body !== message?.body) {
+      if (next?.id !== message?.id) page = 0;
+      message = next;
+      if (live && message) live.textContent = `Claude, ${clock(message.at)}: ${message.headline} ${message.body}`.trim();
+    }
     update();
-    setTimeout(tick, PAGE_MS - (Date.now() % PAGE_MS) + 20);
   };
-  setTimeout(tick, PAGE_MS - (Date.now() % PAGE_MS) + 20);
+
+  // Messages arrive over a WebSocket the moment they are posted; reconnect
+  // with backoff, and catch up over plain HTTP if sockets are unavailable.
+  let ws = null;
+  let retry = 1000;
+  let opened = false;
+  let polling = 0;
+  const poll = () => fetch('/api/latest', { cache: 'no-store' }).then(r => r.json()).then(receive).catch(() => {});
+  const connect = () => {
+    try {
+      ws = new WebSocket(`${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/api/live`);
+    } catch { ws = null; }
+    if (!ws) return;
+    ws.onopen = () => {
+      opened = true;
+      online = true;
+      retry = 1000;
+      clearInterval(polling);
+      polling = 0;
+      update();
+    };
+    ws.onmessage = e => { if (e.data !== 'pong') receive(JSON.parse(e.data)); };
+    ws.onclose = () => {
+      // Networks that block WebSockets get a quick poll instead.
+      if (!opened && !polling) polling = setInterval(poll, 3000);
+      online = Boolean(polling);
+      update();
+      setTimeout(connect, retry);
+      retry = Math.min(retry * 2, 30000);
+    };
+  };
+  poll();
+  connect();
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible' && (!ws || ws.readyState > 1)) connect();
+  });
+  setInterval(() => { if (ws?.readyState === 1) ws.send('ping'); }, 45000);
+
+  update();
+  // The "42s ago" stamp ticks every second.
+  setInterval(() => { if (document.visibilityState === 'visible') update(); }, 1000);
   let pending;
   window.addEventListener('resize', () => {
     clearTimeout(pending);

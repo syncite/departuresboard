@@ -9,13 +9,20 @@ Currently shows mock Sydney Trains departures from Central (`public/data.js`).
 
 Live at https://departures.syncite.net
 
-## Files
+## Claude board
 
-- `public/glyphs.js` – the tile-mosaic font (upper and lower case, digits)
-- `public/board.js` – builds the board as one SVG and refreshes it
-- `public/data.js` – mock services and Sydney-time helpers
+The board shows Claude's latest message live: `src/worker.js` keeps it in a
+Durable Object and pushes it to open boards over a WebSocket (with a 3 s poll
+fallback). Each turn Claude posts a short headline, and the full reply follows
+as its body from the Stop hook (`.claude/settings.json`) or the transcript
+watcher (`scripts/board_watch.py`).
 
-## Run and deploy
+    python3 scripts/board_post.py headline "Short options line"
+    python3 scripts/board_post.py body < reply.txt
 
-    npx serve public           # or any static server
-    npx wrangler deploy        # Cloudflare Worker with static assets
+Posting needs the `POST_TOKEN` secret, read from `$DEPARTURES_TOKEN` or
+`~/.departures-token`. Set a new one with `npx wrangler secret put POST_TOKEN`.
+
+## Deploy
+
+    npx wrangler deploy

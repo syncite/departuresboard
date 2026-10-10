@@ -131,3 +131,14 @@ html, body {
   stroke: #0b0b0c;
   stroke-width: 0.7;
 }
+
+.board .pager {
+  position: absolute;
+  z-index: 2;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+  border-radius: 4px;
+}
+.board .pager:focus-visible { outline: 2px solid #ffe08a; outline-offset: 2px; }
