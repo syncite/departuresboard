@@ -18,9 +18,22 @@ const json = (data, status = 200) => new Response(JSON.stringify(data), {
   status, headers: { 'content-type': 'application/json', 'cache-control': 'no-store' },
 });
 
+// While anyone watches the cricket, the 'cricket' instance polls the feed
+// every POLL_MS and pushes each change straight to their sockets.
+const POLL_MS = 2000;
+
 export class Feed extends DurableObject {
   async fetch(request) {
     const url = new URL(request.url);
+    if (url.pathname === '/api/cricket/live') {
+      if ((request.headers.get('Upgrade') || '').toLowerCase() !== 'websocket') return json({ error: 'expected websocket' }, 426);
+      const [client, server] = Object.values(new WebSocketPair());
+      this.ctx.acceptWebSocket(server);
+      const last = await this.ctx.storage.get('score');
+      if (last) server.send(last);
+      if (!(await this.ctx.storage.getAlarm())) await this.ctx.storage.setAlarm(Date.now());
+      return new Response(null, { status: 101, webSocket: client });
+    }
     const latest = (await this.ctx.storage.get('latest')) || null;
     if (url.pathname === '/api/live') {
       if ((request.headers.get('Upgrade') || '').toLowerCase() !== 'websocket') return json({ error: 'expected websocket' }, 426);
@@ -53,6 +66,22 @@ export class Feed extends DurableObject {
       return json({ ok: true, id: message.id });
     }
     return json({ error: 'not found' }, 404);
+  }
+
+  async alarm() {
+    const sockets = this.ctx.getWebSockets();
+    if (!sockets.length) return;           // nobody watching: stop polling
+    try {
+      const data = await cricket();
+      const { at, ...rest } = data;
+      const key = JSON.stringify(rest);
+      if (key !== (await this.ctx.storage.get('scoreKey'))) {
+        const payload = JSON.stringify(data);
+        await this.ctx.storage.put({ score: payload, scoreKey: key });
+        for (const ws of sockets) { try { ws.send(payload); } catch { /* closed */ } }
+      }
+    } catch { /* feed hiccup: try again next tick */ }
+    await this.ctx.storage.setAlarm(Date.now() + POLL_MS);
   }
 
   webSocketMessage(ws, data) {
@@ -117,13 +146,16 @@ export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
     if (!url.pathname.startsWith('/api/')) return env.ASSETS.fetch(request);
+    if (url.pathname === '/api/cricket/live') {
+      return env.FEED.get(env.FEED.idFromName('cricket')).fetch(request);
+    }
     if (url.pathname === '/api/cricket') {
       const key = new Request(`${url.origin}/api/cricket`);
       const hit = await caches.default.match(key);
       if (hit) return hit;
       try {
         const res = new Response(JSON.stringify(await cricket()), {
-          headers: { 'content-type': 'application/json', 'cache-control': 'public, max-age=15' },
+          headers: { 'content-type': 'application/json', 'cache-control': 'public, max-age=2' },
         });
         ctx.waitUntil(caches.default.put(key, res.clone()));
         return res;

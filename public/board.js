@@ -812,19 +812,37 @@ export function mount(container, live, { hdrToggle, viewToggle, tiltToggle, tabs
   connect();
   document.addEventListener('visibilitychange', () => {
     if (document.visibilityState === 'visible' && (!ws || ws.readyState > 1)) connect();
+    if (document.visibilityState === 'visible') openCricket();
   });
   setInterval(() => { if (ws?.readyState === 1) ws.send('ping'); }, 45000);
 
+  // Cricket arrives over its own WebSocket: the server polls the feed every
+  // 2 s while anyone watches and pushes each new ball. HTTP polling covers
+  // networks that block sockets.
   let cricketTimer = 0;
+  let cricketWs = null;
   const fetchScore = () => fetch('/api/cricket', { cache: 'no-store' })
     .then(r => r.json()).then(d => { score = d; update(); })
-    .catch(() => { score = { error: 'offline' }; update(); });
+    .catch(() => { if (!score) { score = { error: 'offline' }; update(); } });
+  const openCricket = () => {
+    if (mode !== 'cricket' || (cricketWs && cricketWs.readyState < 2)) return;
+    let opened = false;
+    try { cricketWs = new WebSocket(`${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/api/cricket/live`); } catch { return; }
+    cricketWs.onopen = () => { opened = true; clearInterval(cricketTimer); };
+    cricketWs.onmessage = e => { if (e.data !== 'pong') { score = JSON.parse(e.data); update(); } };
+    cricketWs.onclose = () => {
+      cricketWs = null;
+      if (mode !== 'cricket') return;
+      if (!opened) { clearInterval(cricketTimer); cricketTimer = setInterval(fetchScore, 3000); }
+      setTimeout(openCricket, opened ? 1000 : 10000);
+    };
+  };
   const setMode = next => {
     mode = next;
     try { localStorage.setItem('departures-mode', mode); } catch { /* storage unavailable */ }
     for (const tab of tabs) tab.setAttribute('aria-selected', String(tab.dataset.mode === mode));
     clearInterval(cricketTimer);
-    if (mode === 'cricket') { fetchScore(); cricketTimer = setInterval(fetchScore, 15000); }
+    if (mode === 'cricket') { fetchScore(); openCricket(); } else if (cricketWs) { cricketWs.close(); cricketWs = null; }
     page = 0;
     update();
   };
