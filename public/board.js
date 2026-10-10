@@ -9,7 +9,7 @@ const U = 2.6;
 const ROW = 1.65 * U;                // one tile row
 const PANEL_W = 8.9 * U;
 const PANEL_H = 18.4 * U;
-const DIVIDER = 2.55 * U;            // black gap between character panels
+const DIVIDER = 2.1 * U;             // black gap between character panels
 const RAIL = 7.6 * U;                // black rail between character lines
 const PAD_X = 8;
 const HEAD_H = 46;
@@ -112,13 +112,15 @@ function buildDefs(svg) {
   gradient(defs, 'rail', [['0', 'var(--rail-top)'], ['0.12', 'var(--rail)'], ['1', 'var(--rail-bottom)']]);
   gradient(defs, 'falloff', [['0', 'rgba(0,0,0,0)'], ['0.7', 'rgba(0,0,0,0.08)'], ['1', 'rgba(0,0,0,0.28)']],
     { cx: 0.5, cy: 0.35, r: 0.8 }, 'radialGradient');
-  gradient(defs, 'sheen', [['0', 'rgba(255,240,200,0.07)'], ['0.45', 'rgba(255,240,200,0)']],
+  gradient(defs, 'sheen', [['0', 'rgba(255,200,120,0.09)'], ['0.5', 'rgba(255,200,120,0)']],
     { x1: 0, y1: 0, x2: 0.6, y2: 1 });
   for (const [ch, def] of Object.entries(GLYPHS)) {
     const d = glyphPath(def);
     const clip = el('clipPath', { id: `c-${glyphId(ch)}` }, defs);
     el('path', { d }, clip);
     const g = el('g', { id: glyphId(ch) }, defs);
+    // Glow as soft vector halos behind the lit tiles, so it stays crisp at any zoom.
+    for (const ring of [4, 3, 2, 1]) el('path', { d, class: `halo halo-${ring}` }, g);
     el('path', { d, fill: 'url(#lit)' }, g);
     el('path', { d: SEAMS, class: 'seam', 'clip-path': `url(#c-${glyphId(ch)})` }, g);
   }
@@ -227,6 +229,18 @@ function describe(list) {
   return list.map(t => `${hhmm(t.time)} ${t.line} to ${t.dest}, ${t.via.replace('·', 'and')}, platform ${t.plat}`).join('. ');
 }
 
+// Tile seams are barely visible from across a concourse and obvious up close,
+// so their strength follows the on-screen size of a tile row, pinch zoom included.
+function updateSeams(container) {
+  const svg = container.querySelector('svg');
+  if (!svg) return;
+  const scale = svg.getBoundingClientRect().width / svg.viewBox.baseVal.width;
+  const zoom = window.visualViewport ? window.visualViewport.scale : 1;
+  const rowPx = ROW * scale * zoom;
+  const t = Math.min(1, Math.max(0, (rowPx - 4) / 14));
+  svg.style.setProperty('--seam-alpha', (0.12 + 0.68 * t).toFixed(3));
+}
+
 export function mount(container, live) {
   let last = '';
   const update = () => {
@@ -238,6 +252,7 @@ export function mount(container, live) {
     if (key === last) return;
     last = key;
     container.replaceChildren(drawBoard(wide ? wideLayout(list) : narrowLayout(list, cols)));
+    updateSeams(container);
     if (live) live.textContent = describe(list);
   };
   update();
@@ -245,6 +260,7 @@ export function mount(container, live) {
   let pending;
   window.addEventListener('resize', () => {
     clearTimeout(pending);
-    pending = setTimeout(update, 150);
+    pending = setTimeout(() => { update(); updateSeams(container); }, 150);
   });
+  window.visualViewport?.addEventListener('resize', () => updateSeams(container));
 }
