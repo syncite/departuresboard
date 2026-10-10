@@ -64,10 +64,60 @@ export class Feed extends DurableObject {
   }
 }
 
+// Live score and last ball for South Africa v Australia, 1st Test (Durban),
+// from ESPN's feed for Cricinfo. Cached for 15 s so viewers share one fetch.
+const CRICKET = { league: '24203', event: '1525659' };
+const ESPN = 'https://site.web.api.espn.com/apis/site/v2/sports/cricket';
+
+async function espn(path) {
+  const r = await fetch(`${ESPN}/${CRICKET.league}/${path}`, { headers: { 'User-Agent': 'Mozilla/5.0' } });
+  if (!r.ok) throw new Error(`espn ${r.status}`);
+  return r.json();
+}
+
+async function cricket() {
+  const [summary, first] = await Promise.all([
+    espn(`summary?event=${CRICKET.event}`),
+    espn(`playbyplay?event=${CRICKET.event}&page=1`),
+  ]);
+  const pages = first.commentary?.pageCount || 1;
+  const last = pages > 1 ? await espn(`playbyplay?event=${CRICKET.event}&page=${pages}`) : first;
+  const ball = (last.commentary?.items || []).at(-1) || null;
+  const comp = summary.header.competitions[0];
+  const status = comp.status || {};
+  return {
+    title: `${comp.competitors.map(c => c.team.abbreviation).join(' v ')} · ${summary.header.competitions[0].description || '1st Test'}`,
+    session: status.session || status.type?.description || '',
+    state: status.type?.state || '',
+    teams: comp.competitors.map(c => ({ name: c.team.abbreviation, score: c.score || '', batting: Boolean(c.linescores?.at(-1)?.isBatting) })),
+    ball: ball && {
+      over: ball.over?.overs ?? '',
+      short: ball.shortText || '',
+      text: (ball.text || '').replace(/<[^>]+>/g, ''),
+      score: ball.homeScore || '',
+    },
+    at: Date.now(),
+  };
+}
+
 export default {
-  async fetch(request, env) {
+  async fetch(request, env, ctx) {
     const url = new URL(request.url);
     if (!url.pathname.startsWith('/api/')) return env.ASSETS.fetch(request);
+    if (url.pathname === '/api/cricket') {
+      const key = new Request(`${url.origin}/api/cricket`);
+      const hit = await caches.default.match(key);
+      if (hit) return hit;
+      try {
+        const res = new Response(JSON.stringify(await cricket()), {
+          headers: { 'content-type': 'application/json', 'cache-control': 'public, max-age=15' },
+        });
+        ctx.waitUntil(caches.default.put(key, res.clone()));
+        return res;
+      } catch (err) {
+        return json({ error: String(err.message || err) }, 502);
+      }
+    }
     if (url.pathname === '/api/post') {
       const auth = request.headers.get('Authorization') || '';
       if (!env.POST_TOKEN || auth !== `Bearer ${env.POST_TOKEN}`) return json({ error: 'unauthorised' }, 401);

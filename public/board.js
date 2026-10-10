@@ -422,6 +422,119 @@ function messageLayout(msg, cols, total, page, now, online) {
   return { cols, lines, labels, labelSize: cols >= MIN_WIDE_COLS ? 21 : 28, pages, page: p };
 }
 
+/**
+ * One page of cricket: the match, each side's score (batting side marked),
+ * the session, then the last ball and as much of its commentary as fits.
+ */
+function cricketLayout(data, cols, total) {
+  const rows = [];
+  const push = (...lines) => rows.push(...lines);
+  if (!data || data.error) {
+    push('Cricket', '', ...wrap(data?.error ? 'Score feed unavailable. Retrying...' : 'Loading the score...', cols));
+  } else {
+    push(...wrap(boardText(data.title).join(' '), cols).slice(0, 1));
+    for (const t of data.teams) {
+      const score = (t.score || (t.batting ? '0' : 'yet to bat')).replace(' ov)', ')');
+      push(...wrap(`${t.batting ? '>' : ' '}${t.name} ${score}`, cols).slice(0, 2));
+    }
+    push(...wrap(boardText(data.session).join(' '), cols).slice(0, 1), '');
+    if (data.ball) {
+      push(...wrap(`${data.ball.over} ${boardText(data.ball.short).join(' ')}`, cols));
+      const room = total - rows.length;
+      const text = wrapAll(boardText(data.ball.text), cols);
+      if (text.length > room && room > 0) {
+        text.length = room;
+        text[room - 1] = `${text[room - 1].slice(0, cols - 3)}...`;
+      }
+      push(...text);
+    }
+  }
+  rows.length = Math.min(rows.length, total);
+  while (rows.length < total) rows.push('');
+  const lines = rows.map(row => (row ? [[0, row]] : []));
+  const labels = [[0, 'CRICKET', 'start'], [cols - 1, data?.state === 'in' ? 'LIVE' : '', 'end']];
+  return { cols, lines, labels, labelSize: cols >= MIN_WIDE_COLS ? 21 : 28, pages: 1, page: 0 };
+}
+
+// ---- Haptics and tilt ---------------------------------------------------------
+
+/**
+ * A light tap. Android has the Vibration API; iOS Safari has none, but
+ * toggling a native switch control gives its system haptic (iOS 18+).
+ */
+const haptic = (() => {
+  let label = null;
+  let last = 0;
+  return () => {
+    const now = performance.now();
+    if (now - last < 55) return;
+    last = now;
+    if (navigator.vibrate) { navigator.vibrate(8); return; }
+    if (!label) {
+      const input = document.createElement('input');
+      input.type = 'checkbox';
+      input.setAttribute('switch', '');
+      input.id = 'haptic-switch';
+      label = document.createElement('label');
+      label.htmlFor = input.id;
+      label.className = 'sr-only';
+      label.setAttribute('aria-hidden', 'true');
+      document.body.append(input, label);
+      input.className = 'sr-only';
+      input.tabIndex = -1;
+    }
+    label.click();
+  };
+})();
+
+/**
+ * Tilt parallax: the board leans with the phone (device orientation) or the
+ * mouse, as a small 3D rotation of its container. It is switched off while
+ * pinch-zoomed so the board stays vector-sharp up close.
+ */
+function tilt(container, toggle) {
+  let on = false;
+  let target = [0, 0];
+  let now = [0, 0];
+  let frame = 0;
+  const step = () => {
+    now = now.map((v, i) => v + (target[i] - v) * 0.12);
+    const zoomed = (window.visualViewport?.scale || 1) > 1.05;
+    container.style.transform = on && !zoomed
+      ? `perspective(1400px) rotateX(${now[0].toFixed(2)}deg) rotateY(${now[1].toFixed(2)}deg)`
+      : '';
+    frame = Math.abs(target[0] - now[0]) + Math.abs(target[1] - now[1]) > 0.01 ? requestAnimationFrame(step) : 0;
+  };
+  const aim = (x, y) => {
+    target = [Math.max(-6, Math.min(6, x)), Math.max(-6, Math.min(6, y))];
+    if (!frame) frame = requestAnimationFrame(step);
+  };
+  let base = null;
+  window.addEventListener('deviceorientation', e => {
+    if (!on || e.beta == null) return;
+    base ??= [e.beta, e.gamma];
+    aim(-(e.beta - base[0]) * 0.35, (e.gamma - base[1]) * 0.35);
+  });
+  window.addEventListener('pointermove', e => {
+    if (!on || e.pointerType !== 'mouse') return;
+    aim(-(e.clientY / innerHeight - 0.5) * 6, (e.clientX / innerWidth - 0.5) * 8);
+  });
+  const sync = () => {
+    toggle.textContent = on ? 'Tilt: on' : 'Tilt: off';
+    toggle.setAttribute('aria-pressed', String(on));
+    if (!on) aim(0, 0);
+  };
+  toggle.addEventListener('click', async () => {
+    if (!on && typeof DeviceOrientationEvent?.requestPermission === 'function') {
+      try { await DeviceOrientationEvent.requestPermission(); } catch { /* denied: mouse only */ }
+    }
+    on = !on;
+    base = null;
+    sync();
+  });
+  sync();
+}
+
 /** Where a tile sits on screen, as fractions of the board (for the pager button). */
 function tileBox(drawn, l, c) {
   const pts = rectPts(colX(c), lineY(l), colX(c) + PANEL_W, lineY(l) + PANEL_H).map(([x, y]) => drawn.view.p(x, y));
@@ -523,7 +636,7 @@ function hdrLayer(container, toggle) {
   };
 }
 
-export function mount(container, live, hdrToggle, viewToggle) {
+export function mount(container, live, { hdrToggle, viewToggle, tiltToggle, tabs }) {
   const host = document.createElement('div');
   host.className = 'board-host';
   const overlayHost = document.createElement('div');
@@ -540,6 +653,9 @@ export function mount(container, live, hdrToggle, viewToggle) {
   const reduceMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
 
   let angled = angledPreference();
+  let mode = 'claude';
+  try { if (localStorage.getItem('departures-mode') === 'cricket') mode = 'cricket'; } catch { /* default */ }
+  let score = null;
   let message = null;
   let skew = 0;              // server clock minus ours
   let online = false;
@@ -566,7 +682,11 @@ export function mount(container, live, hdrToggle, viewToggle) {
   };
 
   const animate = () => {
-    const { running, lit } = drawFlips(drawn, flips, performance.now());
+    const t = performance.now();
+    for (const fl of flips) {
+      if (!fl.tapped && t - fl.start > FLIP_MS * 0.72) { fl.tapped = true; haptic(); }
+    }
+    const { running, lit } = drawFlips(drawn, flips, t);
     // The HDR layer follows the flaps frame by frame, so nothing dims mid-flip.
     setClip(hdrClip(drawn, drawn.base.getBoundingClientRect().width, lit));
     if (running) {
@@ -583,9 +703,17 @@ export function mount(container, live, hdrToggle, viewToggle) {
     const wideCols = Math.min(MAX_COLS, Math.floor(width / WIDE_PITCH));
     const wide = wideCols >= MIN_WIDE_COLS;
     const cols = wide ? wideCols : Math.max(MIN_COLS, Math.floor(width / NARROW_PITCH));
-    const layout = messageLayout(message, cols, wide ? WIDE_LINES : NARROW_LINES, page, Date.now() + skew, online);
+    let total = wide ? WIDE_LINES : NARROW_LINES;
+    if (mode === 'cricket') {
+      // One screen, no scrolling: as many lines as fit below the tabs.
+      const scale = width / boardWidth(cols) * (angled ? ANGLED.squash : 1);
+      const fit = Math.floor((window.innerHeight - 190) / ((PANEL_H + RAIL) * scale));
+      total = Math.max(7, Math.min(10, fit));
+    }
+    const layout = mode === 'cricket' ? cricketLayout(score, cols, total)
+      : messageLayout(message, cols, total, page, Date.now() + skew, online);
     page = layout.page;
-    return { layout, grid: toGrid(layout), shape: `${angled}|${wide}|${cols}` };
+    return { layout, grid: toGrid(layout), shape: `${angled}|${wide}|${cols}|${mode}` };
   };
 
   const update = ({ instant = false } = {}) => {
@@ -677,7 +805,22 @@ export function mount(container, live, hdrToggle, viewToggle) {
   });
   setInterval(() => { if (ws?.readyState === 1) ws.send('ping'); }, 45000);
 
-  update();
+  let cricketTimer = 0;
+  const fetchScore = () => fetch('/api/cricket', { cache: 'no-store' })
+    .then(r => r.json()).then(d => { score = d; update(); })
+    .catch(() => { score = { error: 'offline' }; update(); });
+  const setMode = next => {
+    mode = next;
+    try { localStorage.setItem('departures-mode', mode); } catch { /* storage unavailable */ }
+    for (const tab of tabs) tab.setAttribute('aria-selected', String(tab.dataset.mode === mode));
+    clearInterval(cricketTimer);
+    if (mode === 'cricket') { fetchScore(); cricketTimer = setInterval(fetchScore, 15000); }
+    page = 0;
+    update();
+  };
+  for (const tab of tabs) tab.addEventListener('click', () => setMode(tab.dataset.mode));
+  if (tiltToggle) tilt(container, tiltToggle);
+  setMode(mode);
   // The "42s ago" stamp ticks every second.
   setInterval(() => { if (document.visibilityState === 'visible') update(); }, 1000);
   let pending;

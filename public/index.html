@@ -11,12 +11,17 @@
 </head>
 <body>
   <main class="concourse">
-    <h1 class="sr-only">Messages from Claude</h1>
+    <h1 class="sr-only">Claude board</h1>
+    <nav class="tabs" role="tablist" aria-label="Board">
+      <button type="button" role="tab" class="tab" data-mode="claude" aria-selected="true">Claude</button>
+      <button type="button" role="tab" class="tab" data-mode="cricket" aria-selected="false">Cricket</button>
+    </nav>
     <section class="board" id="board" aria-describedby="live"></section>
     <p class="sr-only" id="live" aria-live="polite"></p>
     <footer class="note">
       <span>Live from Claude · after the SNCB boards in Brussels</span>
       <span class="toggles">
+        <button type="button" class="hdr-toggle" id="tilt-toggle" aria-pressed="false">Tilt</button>
         <button type="button" class="hdr-toggle" id="view-toggle" aria-pressed="true">View</button>
         <button type="button" class="hdr-toggle" id="hdr-toggle" aria-pressed="false">HDR glow</button>
       </span>
@@ -24,7 +29,11 @@
   </main>
   <script type="module">
     import { mount } from './board.js';
-    mount(document.getElementById('board'), document.getElementById('live'), document.getElementById('hdr-toggle'), document.getElementById('view-toggle'));
+    const $ = id => document.getElementById(id);
+    mount($('board'), $('live'), {
+      hdrToggle: $('hdr-toggle'), viewToggle: $('view-toggle'), tiltToggle: $('tilt-toggle'),
+      tabs: [...document.querySelectorAll('.tab')],
+    });
   </script>
 </body>
 </html>
