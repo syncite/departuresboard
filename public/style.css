@@ -125,3 +125,9 @@ html, body {
 }
 
 .toggles { display: inline-flex; gap: 8px; }
+
+.board .hinge {
+  fill: none;
+  stroke: #0b0b0c;
+  stroke-width: 0.7;
+}
