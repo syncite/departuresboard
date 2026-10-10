@@ -299,8 +299,13 @@ function hdrLayer(container, toggle) {
   video.setAttribute('playsinline', '');
   video.setAttribute('aria-hidden', 'true');
   video.className = 'hdr';
-  video.src = 'glow-hdr.mp4';
   container.appendChild(video);
+  // Played from a blob URL: Safari insists on byte-range responses for video,
+  // which the static host does not give, and the clip is only 7 KB anyway.
+  const ready = fetch('glow-hdr.mp4')
+    .then(r => (r.ok ? r.blob() : Promise.reject(new Error(r.statusText))))
+    .then(blob => { video.src = URL.createObjectURL(new Blob([blob], { type: 'video/mp4' })); })
+    .catch(() => {});
 
   let on = hdrPreference();
   const sync = () => {
@@ -309,7 +314,7 @@ function hdrLayer(container, toggle) {
       toggle.textContent = on ? 'HDR glow: on' : 'HDR glow: off';
       toggle.setAttribute('aria-pressed', String(on));
     }
-    if (on) video.play().catch(() => {});
+    if (on) ready.then(() => video.play()).catch(() => {});
     else video.pause();
   };
   video.addEventListener('playing', () => container.classList.add('hdr-playing'));
