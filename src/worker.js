@@ -75,27 +75,40 @@ async function espn(path) {
   return r.json();
 }
 
+const ballMark = b => (b.dismissal?.dismissal ? 'W' : b.over?.wide ? 'wd' : b.over?.noBall ? 'nb'
+  : b.scoreValue ? String(b.scoreValue) : '.');
+
 async function cricket() {
   const [summary, first] = await Promise.all([
     espn(`summary?event=${CRICKET.event}`),
     espn(`playbyplay?event=${CRICKET.event}&page=1`),
   ]);
   const pages = first.commentary?.pageCount || 1;
-  const last = pages > 1 ? await espn(`playbyplay?event=${CRICKET.event}&page=${pages}`) : first;
-  const ball = (last.commentary?.items || []).at(-1) || null;
+  let items = (pages > 1 ? await espn(`playbyplay?event=${CRICKET.event}&page=${pages}`) : first).commentary?.items || [];
+  if (items.length < 16 && pages > 1) {
+    const prev = await espn(`playbyplay?event=${CRICKET.event}&page=${pages - 1}`);
+    items = [...(prev.commentary?.items || []), ...items];
+  }
+  const ball = items.at(-1) || null;
   const comp = summary.header.competitions[0];
   const status = comp.status || {};
+  const bat = b => b?.athlete && { name: b.athlete.shortName || b.athlete.name, runs: b.totalRuns ?? 0, balls: b.faced ?? 0 };
+  const bowl = b => b?.athlete && {
+    name: b.athlete.shortName || b.athlete.name, overs: b.overs, maidens: b.maidens, runs: b.conceded, wickets: b.wickets,
+  };
+  const overNo = ball?.over?.number;
   return {
-    title: `${comp.competitors.map(c => c.team.abbreviation).join(' v ')} · ${summary.header.competitions[0].description || '1st Test'}`,
+    title: `${comp.competitors.map(c => c.team.abbreviation).join(' v ')} · ${comp.description || '1st Test'}`,
     session: status.session || status.type?.description || '',
     state: status.type?.state || '',
     teams: comp.competitors.map(c => ({ name: c.team.abbreviation, score: c.score || '', batting: Boolean(c.linescores?.at(-1)?.isBatting) })),
-    ball: ball && {
-      over: ball.over?.overs ?? '',
-      short: ball.shortText || '',
-      text: (ball.text || '').replace(/<[^>]+>/g, ''),
-      score: ball.homeScore || '',
-    },
+    runRate: ball?.innings?.runRate ?? null,
+    batters: ball ? [bat(ball.batsman), bat(ball.otherBatsman)].filter(Boolean) : [],
+    bowler: ball ? bowl(ball.bowler) : null,
+    thisOver: items.filter(b => b.over?.number === overNo).map(ballMark),
+    balls: items.slice(-14).reverse().map(b => ({
+      over: b.over?.overs ?? '', short: b.shortText || '', text: (b.text || '').replace(/<[^>]+>/g, ''),
+    })),
     at: Date.now(),
   };
 }

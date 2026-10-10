@@ -428,26 +428,33 @@ function messageLayout(msg, cols, total, page, now, online) {
  */
 function cricketLayout(data, cols, total) {
   const rows = [];
-  const push = (...lines) => rows.push(...lines);
+  const fitLine = text => wrap(boardText(text).join(' '), cols)[0] || '';
   if (!data || data.error) {
-    push('Cricket', '', ...wrap(data?.error ? 'Score feed unavailable. Retrying...' : 'Loading the score...', cols));
+    rows.push('Cricket', '', ...wrap(data?.error ? 'Score feed unavailable. Retrying...' : 'Loading the score...', cols));
   } else {
-    push(...wrap(boardText(data.title).join(' '), cols).slice(0, 1));
+    rows.push(fitLine(`${data.title} · ${data.session}`));
     for (const t of data.teams) {
       const score = (t.score || (t.batting ? '0' : 'yet to bat')).replace(' ov)', ')');
-      push(...wrap(`${t.batting ? '>' : ' '}${t.name} ${score}`, cols).slice(0, 2));
+      const rr = t.batting && data.runRate != null ? ` RR ${data.runRate}` : '';
+      rows.push(fitLine(`${t.batting ? '>' : ' '}${t.name} ${score}${rr}`));
     }
-    push(...wrap(boardText(data.session).join(' '), cols).slice(0, 1), '');
-    if (data.ball) {
-      push(...wrap(`${data.ball.over} ${boardText(data.ball.short).join(' ')}`, cols));
-      const room = total - rows.length;
-      const text = wrapAll(boardText(data.ball.text), cols);
-      if (text.length > room && room > 0) {
-        text.length = room;
-        text[room - 1] = `${text[room - 1].slice(0, cols - 3)}...`;
-      }
-      push(...text);
+    data.batters.forEach((b, i) => rows.push(fitLine(`${i ? ' ' : '*'}${b.name.split(' ').at(-1)} ${b.runs} (${b.balls})`)));
+    if (data.bowler) {
+      const b = data.bowler;
+      rows.push(fitLine(`${b.name.split(' ').at(-1)} ${b.overs}-${b.maidens}-${b.runs}-${b.wickets}`));
     }
+    if (data.thisOver.length) rows.push(fitLine(`Over: ${data.thisOver.join(' ')}`));
+    rows.push('');
+    // Play by play, newest first: the last ball with its commentary, then
+    // the balls before it, for as many lines as the screen allows.
+    data.balls.forEach((ball, i) => {
+      if (rows.length >= total) return;
+      // On narrow boards drop "Bowler to Batter," and keep the result.
+      const short = boardText(ball.short).join(' ');
+      const brief = cols < 30 ? short.replace(/^.*?,\s*/, '') : short;
+      rows.push(...wrap(`${ball.over} ${brief}`, cols));
+      if (i === 0 && ball.text) rows.push(...wrapAll(boardText(ball.text), cols).slice(0, 3));
+    });
   }
   rows.length = Math.min(rows.length, total);
   while (rows.length < total) rows.push('');
@@ -506,18 +513,18 @@ function tilt(container, toggle) {
     frame = Math.abs(target[0] - now[0]) + Math.abs(target[1] - now[1]) > 0.01 ? requestAnimationFrame(step) : 0;
   };
   const aim = (x, y) => {
-    target = [Math.max(-6, Math.min(6, x)), Math.max(-6, Math.min(6, y))];
+    target = [Math.max(-30, Math.min(30, x)), Math.max(-30, Math.min(30, y))];
     if (!frame) frame = requestAnimationFrame(step);
   };
   let base = null;
   window.addEventListener('deviceorientation', e => {
     if (!on || e.beta == null) return;
     base ??= [e.beta, e.gamma];
-    aim(-(e.beta - base[0]) * 0.35, (e.gamma - base[1]) * 0.35);
+    aim(-(e.beta - base[0]) * 1.75, (e.gamma - base[1]) * 1.75);
   });
   window.addEventListener('pointermove', e => {
     if (!on || e.pointerType !== 'mouse') return;
-    aim(-(e.clientY / innerHeight - 0.5) * 6, (e.clientX / innerWidth - 0.5) * 8);
+    aim(-(e.clientY / innerHeight - 0.5) * 30, (e.clientX / innerWidth - 0.5) * 40);
   });
   const sync = () => {
     toggle.textContent = on ? 'Tilt: on' : 'Tilt: off';
@@ -700,15 +707,17 @@ export function mount(container, live, { hdrToggle, viewToggle, tiltToggle, tabs
 
   const build = () => {
     const width = container.clientWidth || window.innerWidth;
-    const wideCols = Math.min(MAX_COLS, Math.floor(width / WIDE_PITCH));
+    // Cricket packs more in: smaller tiles than the message board.
+    const dense = mode === 'cricket' ? 0.62 : 1;
+    const wideCols = Math.min(mode === 'cricket' ? 56 : MAX_COLS, Math.floor(width / (WIDE_PITCH * dense)));
     const wide = wideCols >= MIN_WIDE_COLS;
-    const cols = wide ? wideCols : Math.max(MIN_COLS, Math.floor(width / NARROW_PITCH));
+    const cols = wide ? wideCols : Math.max(MIN_COLS, Math.floor(width / (NARROW_PITCH * dense)));
     let total = wide ? WIDE_LINES : NARROW_LINES;
     if (mode === 'cricket') {
       // One screen, no scrolling: as many lines as fit below the tabs.
       const scale = width / boardWidth(cols) * (angled ? ANGLED.squash : 1);
       const fit = Math.floor((window.innerHeight - 190) / ((PANEL_H + RAIL) * scale));
-      total = Math.max(7, Math.min(10, fit));
+      total = Math.max(7, Math.min(28, fit));
     }
     const layout = mode === 'cricket' ? cricketLayout(score, cols, total)
       : messageLayout(message, cols, total, page, Date.now() + skew, online);
