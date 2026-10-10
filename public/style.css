@@ -1,0 +1,95 @@
+:root {
+  --stone: #cbbfa8;
+  --stone-dark: #b3a68d;
+  --bronze: #3a322a;
+  --rail: #151311;
+  --rail-edge: #2b2824;
+  --head: #23211e;
+  --label: #f1eee6;
+  --cell-top: #3a2a1d;
+  --cell-mid: #2c1f15;
+  --cell-bottom: #22180f;
+  --lit: #f2d81d;
+  --page: #14110e;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  min-height: 100%;
+  background: var(--page);
+  color: var(--label);
+  font-family: "Helvetica Neue", Helvetica, Arial, sans-serif;
+}
+
+.concourse {
+  max-width: 1280px;
+  margin: 0 auto;
+  padding: clamp(12px, 3vw, 40px) 16px;
+}
+
+/* Travertine fascia with raised metal letters, as above the Brussels board. */
+.fascia {
+  background:
+    repeating-linear-gradient(180deg, rgba(255, 255, 255, 0.05) 0 2px, transparent 2px 9px),
+    repeating-linear-gradient(178deg, rgba(90, 70, 40, 0.06) 0 1px, transparent 1px 23px),
+    linear-gradient(180deg, var(--stone), var(--stone-dark));
+  padding: clamp(14px, 3vw, 34px) clamp(16px, 4vw, 48px) clamp(12px, 2.4vw, 28px);
+  border-bottom: clamp(4px, 0.8vw, 10px) solid #8f8371;
+}
+
+.fascia h1 {
+  margin: 0;
+  font-weight: 800;
+  font-size: clamp(30px, 8vw, 96px);
+  line-height: 1;
+  letter-spacing: 0.06em;
+  color: var(--bronze);
+  text-shadow: 0 1px 0 rgba(255, 255, 255, 0.35), 0 -1px 0 rgba(0, 0, 0, 0.35), 2px 3px 3px rgba(0, 0, 0, 0.25);
+}
+
+.board svg {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+
+.board .rail { fill: var(--rail); }
+.board .rail-edge { fill: var(--rail-edge); }
+.board .head { fill: var(--head); }
+
+.board .label {
+  fill: var(--label);
+  font-family: "Helvetica Neue", Helvetica, Arial, sans-serif;
+  font-weight: 700;
+  font-size: 19px;
+  letter-spacing: 0.02em;
+}
+
+.board .seg {
+  fill: none;
+  stroke: var(--lit);
+  stroke-width: 2.15;
+  stroke-linecap: square;
+  stroke-linejoin: miter;
+  stroke-miterlimit: 3;
+}
+
+.board .seg-fill { fill: var(--lit); }
+
+.note {
+  margin-top: 14px;
+  font-size: 12px;
+  color: #6f675d;
+  letter-spacing: 0.04em;
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
