@@ -15,7 +15,7 @@ const PAD_X = 8;
 const HEAD_H = 46;
 const GLYPH_X = (PANEL_W - GLYPH_W * U) / 2;
 const GLYPH_Y = 1.8 * U;
-const RADIUS = 0.6 * U;              // rounding on curved corners
+const RADIUS = 0.8 * U;              // rounding on curved corners
 const PITCH = PANEL_W + DIVIDER;
 
 // The full board is 37 characters wide with two lines per train, as on the
@@ -120,7 +120,7 @@ function buildDefs(svg) {
     el('path', { d }, clip);
     const g = el('g', { id: glyphId(ch) }, defs);
     // Glow as soft vector halos behind the lit tiles, so it stays crisp at any zoom.
-    for (const ring of [4, 3, 2, 1]) el('path', { d, class: `halo halo-${ring}` }, g);
+    for (const ring of [4, 3, 2, 1, 0]) el('path', { d, class: `halo halo-${ring}` }, g);
     el('path', { d, fill: 'url(#lit)' }, g);
     el('path', { d: SEAMS, class: 'seam', 'clip-path': `url(#c-${glyphId(ch)})` }, g);
   }
@@ -237,11 +237,101 @@ function updateSeams(container) {
   const scale = svg.getBoundingClientRect().width / svg.viewBox.baseVal.width;
   const zoom = window.visualViewport ? window.visualViewport.scale : 1;
   const rowPx = ROW * scale * zoom;
-  const t = Math.min(1, Math.max(0, (rowPx - 4) / 14));
-  svg.style.setProperty('--seam-alpha', (0.12 + 0.68 * t).toFixed(3));
+  const t = Math.min(1, Math.max(0, (rowPx - 6) / 30));
+  svg.style.setProperty('--seam-alpha', (0.05 + 0.7 * t).toFixed(3));
 }
 
-export function mount(container, live) {
+// The characters placed by a layout, as [char, x, y] in board units.
+function placements({ cols, lines }) {
+  const out = [];
+  lines.forEach((runs, l) => {
+    for (const [col, text] of runs) {
+      [...text].forEach((ch, i) => {
+        if (ch !== ' ' && GLYPHS[ch] && col + i < cols) out.push([ch, colX(col + i) + GLYPH_X, lineY(l) + GLYPH_Y]);
+      });
+    }
+  });
+  return out;
+}
+
+/**
+ * An SVG of just the lit tiles (seams cut faintly through them), used as a
+ * CSS mask so the HDR layer shows only where the board is lit. It stays
+ * vector, so the HDR letters are as crisp as the board underneath.
+ */
+function hdrMask(layout) {
+  const width = boardWidth(layout.cols);
+  const height = lineY(layout.lines.length) + RAIL;
+  const placed = placements(layout);
+  const used = [...new Set(placed.map(([ch]) => ch))];
+  const box = `x="0" y="0" width="${f(GLYPH_W * U)}" height="${f(ROWS * ROW)}"`;
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 ${f(width)} ${f(height)}" preserveAspectRatio="none">` +
+    `<defs><mask id="s" maskUnits="userSpaceOnUse" ${box}><rect ${box} fill="#fff"/>` +
+    `<path d="${SEAMS}" fill="none" stroke="#000" stroke-opacity="0.55" stroke-width="0.45"/></mask>` +
+    used.map(ch => `<path id="${glyphId(ch)}" d="${glyphPath(GLYPHS[ch])}" fill="#fff" mask="url(#s)"/>`).join('') +
+    `</defs>${placed.map(([ch, x, y]) => `<use href="#${glyphId(ch)}" xlink:href="#${glyphId(ch)}" x="${f(x)}" y="${f(y)}"/>`).join('')}</svg>`;
+  return `url("data:image/svg+xml,${encodeURIComponent(svg)}")`;
+}
+
+const HDR_KEY = 'departures-hdr';
+
+function hdrPreference() {
+  try {
+    const saved = localStorage.getItem(HDR_KEY);
+    if (saved) return saved === 'on';
+  } catch { /* storage unavailable */ }
+  return window.matchMedia?.('(dynamic-range: high)').matches ?? false;
+}
+
+function saveHdrPreference(on) {
+  try { localStorage.setItem(HDR_KEY, on ? 'on' : 'off'); } catch { /* storage unavailable */ }
+}
+
+/**
+ * HDR glow: a tiny HDR10 clip of the lit yellow at about 600 nits, played
+ * behind a mask of the letters. On HDR screens the lit tiles then reach past
+ * ordinary white, like the real board. Shown only while it is really playing.
+ */
+function hdrLayer(container, toggle) {
+  const video = document.createElement('video');
+  Object.assign(video, { muted: true, loop: true, playsInline: true, autoplay: true, preload: 'auto' });
+  video.setAttribute('muted', '');
+  video.setAttribute('playsinline', '');
+  video.setAttribute('aria-hidden', 'true');
+  video.className = 'hdr';
+  video.src = 'glow-hdr.mp4';
+  container.appendChild(video);
+
+  let on = hdrPreference();
+  const sync = () => {
+    container.classList.toggle('hdr-on', on);
+    if (toggle) {
+      toggle.textContent = on ? 'HDR glow: on' : 'HDR glow: off';
+      toggle.setAttribute('aria-pressed', String(on));
+    }
+    if (on) video.play().catch(() => {});
+    else video.pause();
+  };
+  video.addEventListener('playing', () => container.classList.add('hdr-playing'));
+  for (const type of ['pause', 'emptied', 'error', 'stalled']) {
+    video.addEventListener(type, () => container.classList.remove('hdr-playing'));
+  }
+  toggle?.addEventListener('click', () => { on = !on; saveHdrPreference(on); sync(); });
+  // Autoplay can be refused (Low Power Mode); the first tap retries.
+  window.addEventListener('pointerdown', () => { if (on && video.paused) video.play().catch(() => {}); });
+  sync();
+  return mask => {
+    video.style.webkitMaskImage = mask;
+    video.style.maskImage = mask;
+  };
+}
+
+export function mount(container, live, toggle) {
+  const host = document.createElement('div');
+  host.className = 'board-host';
+  container.replaceChildren(host);
+  const setMask = hdrLayer(container, toggle);
+
   let last = '';
   const update = () => {
     const width = container.clientWidth || window.innerWidth;
@@ -251,7 +341,9 @@ export function mount(container, live) {
     const key = `${cols}|${list.map(t => t.time + t.dest).join('|')}`;
     if (key === last) return;
     last = key;
-    container.replaceChildren(drawBoard(wide ? wideLayout(list) : narrowLayout(list, cols)));
+    const layout = wide ? wideLayout(list) : narrowLayout(list, cols);
+    host.replaceChildren(drawBoard(layout));
+    setMask(hdrMask(layout));
     updateSeams(container);
     if (live) live.textContent = describe(list);
   };
