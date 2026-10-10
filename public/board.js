@@ -26,13 +26,12 @@ const PAD_X = 8;
 const HEAD_H = 46;
 const GLYPH_X = (PANEL_W - GLYPH_W * U) / 2;
 const GLYPH_Y = 1.8 * U;
-const GAP = 0.03 * U;                // hairline between tiles, almost invisible
 const RADIUS = 0.6 * U;              // rounding on curved corners
 
 const colX = c => PAD_X + c * (PANEL_W + DIVIDER);
 const lineY = l => HEAD_H + RAIL + l * (PANEL_H + RAIL);
 const WIDTH = colX(COLS - 1) + PANEL_W + PAD_X;
-const HEIGHT = lineY(LINES);
+const HEIGHT = lineY(LINES) + RAIL;
 
 function el(name, attrs = {}, parent) {
   const node = document.createElementNS(SVG_NS, name);
@@ -73,8 +72,8 @@ function glyphPath({ rows, round = {}, polys = [] }) {
     for (let c = 0; c < 5; c++) {
       const code = rows[r][c];
       if (code === '.') continue;
-      const x0 = COL_X[c] * U + GAP, x1 = COL_X[c + 1] * U - GAP;
-      const y0 = r * ROW + GAP, y1 = (r + 1) * ROW - GAP;
+      const x0 = COL_X[c] * U, x1 = COL_X[c + 1] * U;
+      const y0 = r * ROW, y1 = (r + 1) * ROW;
       if (code === 'd') { d += polygon([[x1, y0], [x1, y1], [x0, y1]]); continue; }
       if (code === 'a') { d += polygon([[x0, y0], [x1, y0], [x0, y1]]); continue; }
       const free = [
@@ -93,39 +92,64 @@ function glyphPath({ rows, round = {}, polys = [] }) {
 
 const glyphId = ch => `g-${ch.codePointAt(0).toString(16)}`;
 
+// Thin dark seams between tiles, drawn over each glyph and clipped to it, so
+// straight strokes and diagonals alike show the mosaic grid.
+const SEAMS = [
+  ...COL_X.slice(1, -1).map(x => `M${f(x * U)} 0V${f(ROWS * ROW)}`),
+  ...Array.from({ length: ROWS - 1 }, (_, r) => `M0 ${f((r + 1) * ROW)}H${f(GLYPH_W * U)}`),
+].join('');
+
+function gradient(defs, id, stops, attrs = { x1: 0, y1: 0, x2: 0, y2: 1 }, type = 'linearGradient') {
+  const g = el(type, { id, ...attrs }, defs);
+  for (const [offset, color] of stops) el('stop', { offset, style: `stop-color: ${color}` }, g);
+}
+
 function buildFrame(svg) {
   const defs = el('defs', {}, svg);
-  const grad = el('linearGradient', { id: 'panel', x1: 0, y1: 0, x2: 0, y2: 1 }, defs);
-  el('stop', { offset: '0', style: 'stop-color: var(--panel-top)' }, grad);
-  el('stop', { offset: '1', style: 'stop-color: var(--panel-bottom)' }, grad);
-  const bloom = el('filter', { id: 'bloom', x: '-2%', y: '-10%', width: '104%', height: '120%' }, defs);
-  el('feGaussianBlur', { in: 'SourceGraphic', stdDeviation: '0.9', result: 'b' }, bloom);
-  const soften = el('feComponentTransfer', { in: 'b', result: 'soft' }, bloom);
-  el('feFuncA', { type: 'linear', slope: '0.7' }, soften);
-  const merge = el('feMerge', {}, bloom);
-  el('feMergeNode', { in: 'soft' }, merge);
-  el('feMergeNode', { in: 'SourceGraphic' }, merge);
-  for (const [ch, grid] of Object.entries(GLYPHS)) {
-    el('path', { id: glyphId(ch), d: glyphPath(grid), class: 'lit' }, defs);
+  // Panels are lit from inside but sit in the shadow of the rail above them.
+  gradient(defs, 'panel', [
+    ['0', 'var(--panel-shadow)'], ['0.09', 'var(--panel-top)'], ['0.55', 'var(--panel-mid)'], ['1', 'var(--panel-bottom)'],
+  ]);
+  gradient(defs, 'lit', [['0', 'var(--lit-top)'], ['1', 'var(--lit-bottom)']]);
+  gradient(defs, 'rail', [['0', 'var(--rail-top)'], ['0.12', 'var(--rail)'], ['1', 'var(--rail-bottom)']]);
+  gradient(defs, 'falloff', [['0', 'rgba(0,0,0,0)'], ['0.7', 'rgba(0,0,0,0.08)'], ['1', 'rgba(0,0,0,0.28)']],
+    { cx: 0.5, cy: 0.35, r: 0.8 }, 'radialGradient');
+  gradient(defs, 'sheen', [['0', 'rgba(255,240,200,0.07)'], ['0.45', 'rgba(255,240,200,0)']],
+    { x1: 0, y1: 0, x2: 0.6, y2: 1 });
+
+  for (const [ch, def] of Object.entries(GLYPHS)) {
+    const d = glyphPath(def);
+    const clip = el('clipPath', { id: `c-${glyphId(ch)}` }, defs);
+    el('path', { d }, clip);
+    const g = el('g', { id: glyphId(ch) }, defs);
+    el('path', { d, fill: 'url(#lit)' }, g);
+    el('path', { d: SEAMS, class: 'seam', 'clip-path': `url(#c-${glyphId(ch)})` }, g);
   }
 
   el('rect', { x: 0, y: 0, width: WIDTH, height: HEIGHT, class: 'frame' }, svg);
 
   const label = (text, x, anchor) => {
-    el('text', { x, y: HEAD_H - 12, 'text-anchor': anchor, class: 'label' }, svg).textContent = text;
+    el('text', { x, y: HEAD_H - 14, 'text-anchor': anchor, class: 'label' }, svg).textContent = text;
   };
   label('TIME', colX(FIELDS.time.start), 'start');
   label('DESTINATION', colX(FIELDS.dest.start), 'start');
   label('LINE', colX(FIELDS.line.start), 'start');
   label('PLAT', colX(FIELDS.plat.start + FIELDS.plat.len - 1) + PANEL_W, 'end');
 
-  const panels = el('g', {}, svg);
+  const back = el('g', {}, svg);
   for (let l = 0; l < LINES; l++) {
+    el('rect', { x: 0, y: lineY(l) - RAIL, width: WIDTH, height: RAIL, fill: 'url(#rail)' }, back);
     for (let c = 0; c < COLS; c++) {
-      el('rect', { x: colX(c), y: lineY(l), width: PANEL_W, height: PANEL_H, fill: 'url(#panel)' }, panels);
+      el('rect', { x: colX(c), y: lineY(l), width: PANEL_W, height: PANEL_H, fill: 'url(#panel)' }, back);
     }
   }
-  return el('g', { filter: 'url(#bloom)' }, svg);
+  el('rect', { x: 0, y: lineY(LINES) - RAIL, width: WIDTH, height: RAIL, fill: 'url(#rail)' }, back);
+
+  const layer = el('g', {}, svg);
+  // Broad room lighting: a soft sheen from the upper left and falloff at the edges.
+  el('rect', { x: 0, y: HEAD_H, width: WIDTH, height: HEIGHT - HEAD_H, fill: 'url(#sheen)', 'pointer-events': 'none' }, svg);
+  el('rect', { x: 0, y: 0, width: WIDTH, height: HEIGHT, fill: 'url(#falloff)', 'pointer-events': 'none' }, svg);
+  return layer;
 }
 
 function put(layer, line, col, text) {

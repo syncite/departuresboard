@@ -1,12 +1,16 @@
 :root {
-  --stone: #cbbfa8;
-  --stone-dark: #b3a68d;
-  --bronze: #3a322a;
   --frame: #0f1113;
   --label: #c4c4c0;
-  --panel-top: #402b12;
-  --panel-bottom: #2d1e0b;
-  --lit: #dcda46;
+  --panel-shadow: #160e05;
+  --panel-top: #4a3215;
+  --panel-mid: #3d2911;
+  --panel-bottom: #2a1c0a;
+  --lit-top: #eeec5c;
+  --lit-bottom: #e0dd4a;
+  --seam: rgba(40, 30, 6, 0.75);
+  --rail-top: #2b2e33;
+  --rail: #121417;
+  --rail-bottom: #0b0c0e;
   --page: #0b0c0d;
 }
 
@@ -26,26 +30,6 @@ html, body {
   padding: clamp(12px, 3vw, 40px) 16px;
 }
 
-/* Travertine fascia with raised metal letters, as above the Brussels board. */
-.fascia {
-  background:
-    repeating-linear-gradient(180deg, rgba(255, 255, 255, 0.05) 0 2px, transparent 2px 9px),
-    repeating-linear-gradient(178deg, rgba(90, 70, 40, 0.06) 0 1px, transparent 1px 23px),
-    linear-gradient(180deg, var(--stone), var(--stone-dark));
-  padding: clamp(14px, 3vw, 34px) clamp(16px, 4vw, 48px) clamp(12px, 2.4vw, 28px);
-  border-bottom: clamp(4px, 0.8vw, 10px) solid #8f8371;
-}
-
-.fascia h1 {
-  margin: 0;
-  font-weight: 800;
-  font-size: clamp(30px, 8vw, 96px);
-  line-height: 1;
-  letter-spacing: 0.06em;
-  color: var(--bronze);
-  text-shadow: 0 1px 0 rgba(255, 255, 255, 0.35), 0 -1px 0 rgba(0, 0, 0, 0.35), 2px 3px 3px rgba(0, 0, 0, 0.25);
-}
-
 .board svg {
   display: block;
   width: 100%;
@@ -62,7 +46,21 @@ html, body {
   letter-spacing: 0.01em;
 }
 
-.board .lit { fill: var(--lit); }
+.board .seam {
+  fill: none;
+  stroke: var(--seam);
+  stroke-width: 0.45;
+}
+
+/* On phones the board is shown at twice the fitted size; scroll sideways. */
+@media (max-width: 700px) {
+  .board {
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    margin: 0 -16px;
+  }
+  .board svg { width: 200%; }
+}
 
 .note {
   margin-top: 14px;
