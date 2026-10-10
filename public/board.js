@@ -265,7 +265,9 @@ function drawBoard(layout, grid, angled, skip = new Set()) {
     el('path', { d, class: 'seam', 'clip-path': `url(#lit-${l})` }, overlay);
   });
 
-  return { base, overlay, anim, view, placed, cols, lines };
+  const overAnim = el('g', { class: 'flips-over' }, overlay);
+
+  return { base, overlay, anim, overAnim, view, placed, cols, lines };
 }
 
 /** Path data for a set of placed glyphs, projected and scaled by k. */
@@ -293,47 +295,49 @@ function flapAngle(t) {
  * rest of the board, so it stays vector and follows the camera angle.
  */
 function drawFlips(drawn, flips, now) {
-  const { view, anim } = drawn;
+  const { view, anim, overAnim } = drawn;
   anim.replaceChildren();
+  overAnim.replaceChildren();
   let running = false;
-  const halves = [];
+  const lit = [];            // projected polygons of every lit tile in the flipping cells
   for (const fl of flips) {
     const t = (now - fl.start) / FLIP_MS;
     const x0 = colX(fl.c), x1 = x0 + PANEL_W, y0 = lineY(fl.l), y1 = y0 + PANEL_H;
-    const ym = (y0 + y1) / 2, cx = (x0 + x1) / 2;
+    const ym = (y0 + y1) / 2, cx = (x0 + x1) / 2, hh = PANEL_H / 2;
     const gx = x0 + GLYPH_X, gy = y0 + GLYPH_Y;
-    const glyphHalf = (ch, above, map) => (ch === ' ' ? [] : glyphPolys(ch)
-      .map(poly => clipY(poly.map(([x, y]) => [x + gx, y + gy]), ym, above))
+    // The lit tiles of `ch` between rows lo and hi (board units), mapped by `map`.
+    const part = (ch, lo, hi, map = (x, y) => [x, y]) => (ch === ' ' ? [] : glyphPolys(ch)
+      .map(poly => poly.map(([x, y]) => [x + gx, y + gy]))
+      .map(poly => clipY(poly, lo, false))
+      .map(poly => poly && clipY(poly, hi, true))
       .filter(Boolean)
-      .map(poly => ring(project(view, poly.map(([x, y]) => map(x, y))))));
-    const same = (x, y) => [x, y];
+      .map(poly => project(view, poly.map(([x, y]) => map(x, y)))));
 
     if (t >= 1 || t < 0) {
       if (t < 1) running = true;
-      const ch = t >= 1 ? fl.to : fl.from;
-      halves.push(...glyphHalf(ch, true, same), ...glyphHalf(ch, false, same));
+      lit.push(...part(t >= 1 ? fl.to : fl.from, -Infinity, Infinity));
       continue;
     }
     running = true;
     const theta = flapAngle(t);
-    halves.push(...glyphHalf(fl.to, true, same), ...glyphHalf(fl.from, false, same));
-
-    const g = el('g', {}, anim);
     const upper = theta < Math.PI / 2;
-    const fold = upper ? Math.cos(theta) : -Math.cos(theta);   // 1 flat ... 0 edge-on
-    const lift = Math.sin(theta);                               // how far it leans out
-    const map = (x, y) => [cx + (x - cx) * (1 + 0.1 * lift * Math.abs(y - ym) / (PANEL_H / 2)),
-      ym + (y - ym) * fold];
-    // The flap's shadow on the half it is about to cover.
-    const shadeHalf = upper ? [x0, ym, x1, y1] : [x0, y0, x1, ym];
-    el('path', {
-      d: ring(project(view, rectPts(...shadeHalf))), fill: '#000', 'fill-opacity': f(0.28 * lift),
-    }, g);
+    const fold = Math.abs(Math.cos(theta));   // 1 flat ... 0 edge-on
+    const lift = Math.sin(theta);             // how far it leans out
+    const map = (x, y) => [cx + (x - cx) * (1 + 0.1 * lift * Math.abs(y - ym) / hh), ym + (y - ym) * fold];
+    // Behind the flap: the new top half and the old bottom half, each cut back
+    // to the part the flap leaves uncovered.
+    if (upper) lit.push(...part(fl.to, -Infinity, ym - hh * fold), ...part(fl.from, ym, Infinity));
+    else lit.push(...part(fl.to, -Infinity, ym), ...part(fl.from, ym + hh * fold, Infinity));
+
     const flapRect = upper ? rectPts(x0, y0, x1, ym) : rectPts(x0, ym, x1, y1);
     const flapD = ring(project(view, flapRect.map(([x, y]) => map(x, y))));
-    el('path', { d: flapD, fill: upper ? 'url(#flap-top)' : 'url(#flap-bottom)' }, g);
-    const lit = upper ? glyphHalf(fl.from, true, map) : glyphHalf(fl.to, false, map);
-    if (lit.length) el('path', { d: lit.join(''), fill: 'url(#lit)' }, g);
+    el('path', { d: flapD, fill: upper ? 'url(#flap-top)' : 'url(#flap-bottom)' }, anim);
+    lit.push(...(upper ? part(fl.from, -Infinity, ym, map) : part(fl.to, ym, Infinity, map)));
+
+    // Shading sits above the HDR layer so the bright tiles darken with the flap.
+    const g = el('g', {}, overAnim);
+    const shadeHalf = upper ? [x0, ym, x1, y1] : [x0, y0, x1, ym];
+    el('path', { d: ring(project(view, rectPts(...shadeHalf))), fill: '#000', 'fill-opacity': f(0.28 * lift) }, g);
     // Turning away from the light darkens the flap; a glint runs along it as it lands.
     el('path', { d: flapD, fill: '#000', 'fill-opacity': f((upper ? 0.55 : 0.4) * lift) }, g);
     if (!upper) el('path', { d: flapD, fill: '#fff4d0', 'fill-opacity': f(0.14 * lift * fold) }, g);
@@ -341,8 +345,8 @@ function drawFlips(drawn, flips, now) {
     const [[hx0, hy0], [hx1, hy1]] = project(view, [[x0, ym], [x1, ym]]);
     el('path', { d: `M${f(hx0)} ${f(hy0)}L${f(hx1)} ${f(hy1)}`, class: 'hinge', 'stroke-opacity': f(0.4 + 0.5 * lift) }, g);
   }
-  if (halves.length) anim.prepend(el('path', { d: halves.join(''), fill: 'url(#lit)' }));
-  return running;
+  if (lit.length) el('path', { d: lit.map(ring).join(''), fill: 'url(#lit)' }, anim);
+  return { running, lit };
 }
 
 /** Full-width board: time, destination, line and platform, remarks below. */
@@ -416,8 +420,15 @@ function updateSeams(container, drawn) {
  * vectors at any zoom (a CSS mask image is not), so the HDR letters stay as
  * crisp as the board beneath them.
  */
-function hdrClip({ view, placed }, pxWidth) {
-  return `path('${glyphsPath(view, placed, pxWidth / view.width) || 'M0 0'}')`;
+function hdrClip(drawn, pxWidth, extra = []) {
+  const k = pxWidth / drawn.view.width;
+  // The still tiles only change on a redraw or resize; cache them.
+  if (drawn.clipK !== k) {
+    drawn.clipK = k;
+    drawn.clipStill = glyphsPath(drawn.view, drawn.placed, k);
+  }
+  const moving = extra.map(poly => ring(poly.map(([x, y]) => [x * k, y * k]))).join('');
+  return `path('${drawn.clipStill + moving || 'M0 0'}')`;
 }
 
 const VIEW_KEY = 'departures-view';
@@ -505,13 +516,15 @@ export function mount(container, live, hdrToggle, viewToggle) {
     host.replaceChildren(drawn.base);
     overlayHost.replaceChildren(drawn.overlay);
     container.classList.toggle('camera', angled);
-    // Flipping cells drop out of the HDR layer and light up again as they land.
     setClip(hdrClip(drawn, drawn.base.getBoundingClientRect().width));
     updateSeams(container, drawn);
   };
 
   const animate = () => {
-    if (drawFlips(drawn, flips, performance.now())) {
+    const { running, lit } = drawFlips(drawn, flips, performance.now());
+    // The HDR layer follows the flaps frame by frame, so nothing dims mid-flip.
+    setClip(hdrClip(drawn, drawn.base.getBoundingClientRect().width, lit));
+    if (running) {
       frame = requestAnimationFrame(animate);
     } else {
       frame = 0;
@@ -552,7 +565,7 @@ export function mount(container, live, hdrToggle, viewToggle) {
     if (!changed.length) return;
     flips = changed;
     render(next.layout, next.grid, new Set(changed.map(fl => cellKey(fl.l, fl.c))));
-    frame = requestAnimationFrame(animate);
+    animate();
   };
 
   const syncViewToggle = () => {
