@@ -2,15 +2,12 @@
   --stone: #cbbfa8;
   --stone-dark: #b3a68d;
   --bronze: #3a322a;
-  --rail: #151311;
-  --rail-edge: #2b2824;
-  --head: #23211e;
-  --label: #f1eee6;
-  --cell-top: #3a2a1d;
-  --cell-mid: #2c1f15;
-  --cell-bottom: #22180f;
-  --lit: #f2d81d;
-  --page: #14110e;
+  --frame: #0f1113;
+  --label: #c4c4c0;
+  --panel-top: #402b12;
+  --panel-bottom: #2d1e0b;
+  --lit: #dcda46;
+  --page: #0b0c0d;
 }
 
 * { box-sizing: border-box; }
@@ -55,28 +52,17 @@ html, body {
   height: auto;
 }
 
-.board .rail { fill: var(--rail); }
-.board .rail-edge { fill: var(--rail-edge); }
-.board .head { fill: var(--head); }
+.board .frame { fill: var(--frame); }
 
 .board .label {
   fill: var(--label);
   font-family: "Helvetica Neue", Helvetica, Arial, sans-serif;
   font-weight: 700;
-  font-size: 19px;
-  letter-spacing: 0.02em;
+  font-size: 21px;
+  letter-spacing: 0.01em;
 }
 
-.board .seg {
-  fill: none;
-  stroke: var(--lit);
-  stroke-width: 2.15;
-  stroke-linecap: square;
-  stroke-linejoin: miter;
-  stroke-miterlimit: 3;
-}
-
-.board .seg-fill { fill: var(--lit); }
+.board .lit { fill: var(--lit); }
 
 .note {
   margin-top: 14px;
