@@ -63,15 +63,19 @@ function polygon(pts) {
 
 const CORNERS = ['TL', 'TR', 'BR', 'BL'];
 
-function glyphPath({ rows, round = {}, polys = [] }) {
+/**
+ * The lit tiles of a glyph as one path. By default in glyph units; `ox`, `oy`
+ * and `k` place and scale it, e.g. into CSS pixels for the HDR clip path.
+ */
+function glyphPath({ rows, round = {}, polys = [] }, ox = 0, oy = 0, k = 1) {
   const lit = (r, c) => r >= 0 && r < ROWS && c >= 0 && c < 5 && rows[r][c] !== '.';
   let d = '';
   for (let r = 0; r < ROWS; r++) {
     for (let c = 0; c < 5; c++) {
       const code = rows[r][c];
       if (code === '.') continue;
-      const x0 = COL_X[c] * U, x1 = COL_X[c + 1] * U;
-      const y0 = r * ROW, y1 = (r + 1) * ROW;
+      const x0 = ox + COL_X[c] * U * k, x1 = ox + COL_X[c + 1] * U * k;
+      const y0 = oy + r * ROW * k, y1 = oy + (r + 1) * ROW * k;
       if (code === 'd') { d += polygon([[x1, y0], [x1, y1], [x0, y1]]); continue; }
       if (code === 'a') { d += polygon([[x0, y0], [x1, y0], [x0, y1]]); continue; }
       const free = [
@@ -80,11 +84,11 @@ function glyphPath({ rows, round = {}, polys = [] }) {
       ];
       const explicit = round[`${r},${c}`] || '';
       const max = Math.min(y1 - y0, x1 - x0) / 2;
-      d += roundedRect(x0, y0, x1, y1, CORNERS.map((k, i) =>
-        ((code === 'o' && free[i]) || explicit.includes(k) ? Math.min(RADIUS, max) : 0)));
+      d += roundedRect(x0, y0, x1, y1, CORNERS.map((key, i) =>
+        ((code === 'o' && free[i]) || explicit.includes(key) ? Math.min(RADIUS * k, max) : 0)));
     }
   }
-  for (const poly of polys) d += polygon(poly.map(([x, y]) => [x * U, y * ROW]));
+  for (const poly of polys) d += polygon(poly.map(([x, y]) => [ox + x * U * k, oy + y * ROW * k]));
   return d;
 }
 
@@ -102,7 +106,7 @@ function gradient(defs, id, stops, attrs = { x1: 0, y1: 0, x2: 0, y2: 1 }, type 
   for (const [offset, color] of stops) el('stop', { offset, style: `stop-color: ${color}` }, g);
 }
 
-function buildDefs(svg) {
+function buildBaseDefs(svg) {
   const defs = el('defs', {}, svg);
   // Panels are lit from inside but sit in the shadow of the rail above them.
   gradient(defs, 'panel', [
@@ -110,65 +114,79 @@ function buildDefs(svg) {
   ]);
   gradient(defs, 'lit', [['0', 'var(--lit-top)'], ['1', 'var(--lit-bottom)']]);
   gradient(defs, 'rail', [['0', 'var(--rail-top)'], ['0.12', 'var(--rail)'], ['1', 'var(--rail-bottom)']]);
+  for (const [ch, def] of Object.entries(GLYPHS)) {
+    el('path', { id: glyphId(ch), d: glyphPath(def), fill: 'url(#lit)' }, defs);
+  }
+}
+
+function buildOverlayDefs(svg) {
+  const defs = el('defs', {}, svg);
   gradient(defs, 'falloff', [['0', 'rgba(0,0,0,0)'], ['0.7', 'rgba(0,0,0,0.08)'], ['1', 'rgba(0,0,0,0.28)']],
     { cx: 0.5, cy: 0.35, r: 0.8 }, 'radialGradient');
   gradient(defs, 'sheen', [['0', 'rgba(255,200,120,0.09)'], ['0.5', 'rgba(255,200,120,0)']],
     { x1: 0, y1: 0, x2: 0.6, y2: 1 });
   for (const [ch, def] of Object.entries(GLYPHS)) {
-    const d = glyphPath(def);
     const clip = el('clipPath', { id: `c-${glyphId(ch)}` }, defs);
-    el('path', { d }, clip);
-    const g = el('g', { id: glyphId(ch) }, defs);
-    // Glow as soft vector halos behind the lit tiles, so it stays crisp at any zoom.
-    for (const ring of [4, 3, 2, 1, 0]) el('path', { d, class: `halo halo-${ring}` }, g);
-    el('path', { d, fill: 'url(#lit)' }, g);
-    el('path', { d: SEAMS, class: 'seam', 'clip-path': `url(#c-${glyphId(ch)})` }, g);
+    el('path', { d: glyphPath(def) }, clip);
+    el('path', { id: `s-${glyphId(ch)}`, d: SEAMS, class: 'seam', 'clip-path': `url(#c-${glyphId(ch)})` }, defs);
   }
 }
 
+// The characters placed by a layout, as [char, x, y] in board units.
+function placements({ cols, lines }) {
+  const out = [];
+  lines.forEach((runs, l) => {
+    for (const [col, text] of runs) {
+      [...text].forEach((ch, i) => {
+        if (ch !== ' ' && GLYPHS[ch] && col + i < cols) out.push([ch, colX(col + i) + GLYPH_X, lineY(l) + GLYPH_Y]);
+      });
+    }
+  });
+  return out;
+}
+
 /**
- * Draws a board `cols` characters wide. `lines` is a list of text runs per
- * line, each [column, text]; `labels` are header captions [column, text, align].
+ * Draws a board `cols` characters wide as two stacked SVGs: the board itself,
+ * and an overlay with the tile seams and room lighting. The HDR layer, when
+ * on, sits between them so the seams still cross the brighter letters.
+ * `lines` is a list of text runs per line, each [column, text]; `labels` are
+ * header captions [column, text, align].
  */
-function drawBoard({ cols, lines, labels, labelSize }) {
+function drawBoard(layout) {
+  const { cols, lines, labels, labelSize } = layout;
   const width = boardWidth(cols);
   const height = lineY(lines.length) + RAIL;
-  const svg = el('svg', {
-    viewBox: `0 0 ${f(width)} ${f(height)}`, role: 'img', 'aria-labelledby': 'board-title',
-  });
-  el('title', { id: 'board-title' }, svg).textContent = 'Departures from Central';
-  buildDefs(svg);
+  const viewBox = `0 0 ${f(width)} ${f(height)}`;
+  const placed = placements(layout);
 
-  el('rect', { x: 0, y: 0, width, height, class: 'frame' }, svg);
+  const base = el('svg', { viewBox, role: 'img', 'aria-labelledby': 'board-title' });
+  el('title', { id: 'board-title' }, base).textContent = 'Departures from Central';
+  buildBaseDefs(base);
+  el('rect', { x: 0, y: 0, width, height, class: 'frame' }, base);
   for (const [col, text, align] of labels) {
     const x = align === 'end' ? colX(col) + PANEL_W : colX(col);
     el('text', {
       x, y: HEAD_H - 14, 'text-anchor': align, class: 'label', style: `font-size: ${labelSize}px`,
-    }, svg).textContent = text;
+    }, base).textContent = text;
   }
-
   for (let l = 0; l <= lines.length; l++) {
-    el('rect', { x: 0, y: lineY(l) - RAIL, width, height: RAIL, fill: 'url(#rail)' }, svg);
+    el('rect', { x: 0, y: lineY(l) - RAIL, width, height: RAIL, fill: 'url(#rail)' }, base);
   }
   for (let l = 0; l < lines.length; l++) {
     for (let c = 0; c < cols; c++) {
-      el('rect', { x: colX(c), y: lineY(l), width: PANEL_W, height: PANEL_H, fill: 'url(#panel)' }, svg);
+      el('rect', { x: colX(c), y: lineY(l), width: PANEL_W, height: PANEL_H, fill: 'url(#panel)' }, base);
     }
   }
+  for (const [ch, x, y] of placed) el('use', { href: `#${glyphId(ch)}`, x: f(x), y: f(y) }, base);
 
-  lines.forEach((runs, l) => {
-    for (const [col, text] of runs) {
-      [...text].forEach((ch, i) => {
-        if (ch === ' ' || !GLYPHS[ch] || col + i >= cols) return;
-        el('use', { href: `#${glyphId(ch)}`, x: f(colX(col + i) + GLYPH_X), y: f(lineY(l) + GLYPH_Y) }, svg);
-      });
-    }
-  });
-
+  const overlay = el('svg', { viewBox, class: 'overlay', 'aria-hidden': 'true' });
+  buildOverlayDefs(overlay);
+  for (const [ch, x, y] of placed) el('use', { href: `#s-${glyphId(ch)}`, x: f(x), y: f(y) }, overlay);
   // Broad room lighting: a soft sheen from the upper left and falloff at the edges.
-  el('rect', { x: 0, y: HEAD_H, width, height: height - HEAD_H, fill: 'url(#sheen)' }, svg);
-  el('rect', { x: 0, y: 0, width, height, fill: 'url(#falloff)' }, svg);
-  return svg;
+  el('rect', { x: 0, y: HEAD_H, width, height: height - HEAD_H, fill: 'url(#sheen)' }, overlay);
+  el('rect', { x: 0, y: 0, width, height, fill: 'url(#falloff)' }, overlay);
+
+  return { base, overlay, width, placed };
 }
 
 const fit = (text, len) => text.slice(0, len);
@@ -235,42 +253,22 @@ function updateSeams(container) {
   const svg = container.querySelector('svg');
   if (!svg) return;
   const scale = svg.getBoundingClientRect().width / svg.viewBox.baseVal.width;
+  const target = container;
   const zoom = window.visualViewport ? window.visualViewport.scale : 1;
   const rowPx = ROW * scale * zoom;
   const t = Math.min(1, Math.max(0, (rowPx - 6) / 30));
-  svg.style.setProperty('--seam-alpha', (0.05 + 0.7 * t).toFixed(3));
-}
-
-// The characters placed by a layout, as [char, x, y] in board units.
-function placements({ cols, lines }) {
-  const out = [];
-  lines.forEach((runs, l) => {
-    for (const [col, text] of runs) {
-      [...text].forEach((ch, i) => {
-        if (ch !== ' ' && GLYPHS[ch] && col + i < cols) out.push([ch, colX(col + i) + GLYPH_X, lineY(l) + GLYPH_Y]);
-      });
-    }
-  });
-  return out;
+  target.style.setProperty('--seam-alpha', (0.05 + 0.7 * t).toFixed(3));
 }
 
 /**
- * An SVG of just the lit tiles (seams cut faintly through them), used as a
- * CSS mask so the HDR layer shows only where the board is lit. It stays
- * vector, so the HDR letters are as crisp as the board underneath.
+ * The lit tiles of a drawn board as a CSS clip path in pixels. A path clip is
+ * redrawn as vectors at any zoom (a CSS mask image is not), so the HDR letters
+ * stay as crisp as the board beneath them.
  */
-function hdrMask(layout) {
-  const width = boardWidth(layout.cols);
-  const height = lineY(layout.lines.length) + RAIL;
-  const placed = placements(layout);
-  const used = [...new Set(placed.map(([ch]) => ch))];
-  const box = `x="0" y="0" width="${f(GLYPH_W * U)}" height="${f(ROWS * ROW)}"`;
-  const svg = `<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 ${f(width)} ${f(height)}" preserveAspectRatio="none">` +
-    `<defs><mask id="s" maskUnits="userSpaceOnUse" ${box}><rect ${box} fill="#fff"/>` +
-    `<path d="${SEAMS}" fill="none" stroke="#000" stroke-opacity="0.55" stroke-width="0.45"/></mask>` +
-    used.map(ch => `<path id="${glyphId(ch)}" d="${glyphPath(GLYPHS[ch])}" fill="#fff" mask="url(#s)"/>`).join('') +
-    `</defs>${placed.map(([ch, x, y]) => `<use href="#${glyphId(ch)}" xlink:href="#${glyphId(ch)}" x="${f(x)}" y="${f(y)}"/>`).join('')}</svg>`;
-  return `url("data:image/svg+xml,${encodeURIComponent(svg)}")`;
+function hdrClip({ placed, width }, pxWidth) {
+  const k = pxWidth / width;
+  const d = placed.map(([ch, x, y]) => glyphPath(GLYPHS[ch], x * k, y * k, k)).join('');
+  return `path('${d}')`;
 }
 
 const HDR_KEY = 'departures-hdr';
@@ -289,7 +287,7 @@ function saveHdrPreference(on) {
 
 /**
  * HDR glow: a tiny HDR10 clip of the lit yellow at about 600 nits, played
- * behind a mask of the letters. On HDR screens the lit tiles then reach past
+ * clipped to the letters. On HDR screens the lit tiles then reach past
  * ordinary white, like the real board. Shown only while it is really playing.
  */
 function hdrLayer(container, toggle) {
@@ -325,17 +323,24 @@ function hdrLayer(container, toggle) {
   // Autoplay can be refused (Low Power Mode); the first tap retries.
   window.addEventListener('pointerdown', () => { if (on && video.paused) video.play().catch(() => {}); });
   sync();
-  return mask => {
-    video.style.webkitMaskImage = mask;
-    video.style.maskImage = mask;
+  return clip => {
+    video.style.webkitClipPath = clip;
+    video.style.clipPath = clip;
   };
 }
 
 export function mount(container, live, toggle) {
   const host = document.createElement('div');
   host.className = 'board-host';
+  const overlayHost = document.createElement('div');
+  overlayHost.className = 'overlay-host';
   container.replaceChildren(host);
-  const setMask = hdrLayer(container, toggle);
+  const setClip = hdrLayer(container, toggle);
+  container.appendChild(overlayHost);
+  let drawn = null;
+  const clipToBoard = () => {
+    if (drawn) setClip(hdrClip(drawn, drawn.base.getBoundingClientRect().width));
+  };
 
   let last = '';
   const update = () => {
@@ -347,8 +352,10 @@ export function mount(container, live, toggle) {
     if (key === last) return;
     last = key;
     const layout = wide ? wideLayout(list) : narrowLayout(list, cols);
-    host.replaceChildren(drawBoard(layout));
-    setMask(hdrMask(layout));
+    drawn = drawBoard(layout);
+    host.replaceChildren(drawn.base);
+    overlayHost.replaceChildren(drawn.overlay);
+    clipToBoard();
     updateSeams(container);
     if (live) live.textContent = describe(list);
   };
@@ -357,7 +364,7 @@ export function mount(container, live, toggle) {
   let pending;
   window.addEventListener('resize', () => {
     clearTimeout(pending);
-    pending = setTimeout(() => { update(); updateSeams(container); }, 150);
+    pending = setTimeout(() => { update(); clipToBoard(); updateSeams(container); }, 150);
   });
   window.visualViewport?.addEventListener('resize', () => updateSeams(container));
 }

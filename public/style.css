@@ -7,7 +7,6 @@
   --panel-bottom: #4c2a09;
   --lit-top: #f8ec5e;
   --lit-bottom: #f0dc48;
-  --glow: #ffcf4a;
   --seam-rgb: 70, 38, 4;
   --rail-top: #33271c;
   --rail: #16100b;
@@ -48,14 +47,16 @@ html, body {
   height: 100%;
   object-fit: fill;
   pointer-events: none;
-  -webkit-mask-size: 100% 100%;
-  mask-size: 100% 100%;
-  -webkit-mask-repeat: no-repeat;
-  mask-repeat: no-repeat;
   opacity: 0;
   transition: opacity 0.4s ease;
 }
 .board.hdr-on.hdr-playing video.hdr { opacity: 1; }
+
+.board .overlay-host {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
 
 .board svg {
   display: block;
@@ -79,17 +80,6 @@ html, body {
   stroke-width: 0.45;
 }
 
-.board .halo {
-  fill: none;
-  stroke: var(--glow);
-  stroke-linejoin: round;
-}
-.board .halo-4 { stroke-width: 6; stroke-opacity: 0.035; }
-.board .halo-3 { stroke-width: 4.2; stroke-opacity: 0.05; }
-.board .halo-2 { stroke-width: 2.6; stroke-opacity: 0.07; }
-.board .halo-1 { stroke-width: 1.3; stroke-opacity: 0.1; }
-/* A hairline of the lit colour softens the hard vector edge, like the diffuser. */
-.board .halo-0 { stroke: var(--lit-top); stroke-width: 0.5; stroke-opacity: 0.35; }
 
 /* Richer yellows and oranges on wide-gamut (P3) screens. */
 @supports (color: color(display-p3 1 1 1)) {
@@ -100,7 +90,6 @@ html, body {
     --panel-bottom: color(display-p3 0.31 0.165 0.03);
     --lit-top: color(display-p3 0.99 0.93 0.32);
     --lit-bottom: color(display-p3 0.96 0.86 0.24);
-    --glow: color(display-p3 1 0.8 0.22);
   }
 }
 
