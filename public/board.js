@@ -349,11 +349,20 @@ function drawFlips(drawn, flips, now) {
   return { running, lit };
 }
 
+/**
+ * A message pinned to the top of the board, wrapped across its full width,
+ * followed by one blank line to set it apart from the trains.
+ */
+function messageLines(message, cols, maxLines) {
+  if (!message) return [];
+  return [...wrap(message, cols).slice(0, maxLines).map(row => [[0, row]]), []];
+}
+
 /** Full-width board: time, destination, line and platform, remarks below. */
-function wideLayout(list, cols, page) {
+function wideLayout(list, cols, page, message = '') {
   const lineCol = cols - 6, platCol = cols - 2;
   const destLen = lineCol - 7;
-  const lines = [];
+  const lines = messageLines(message, cols, 4);
   for (const t of list) {
     const dest = wrap(t.dest, destLen);
     const pages = remarkPages(t, cols - 6, 1);
@@ -377,10 +386,10 @@ const right = (text, len) => fit(text, len).padStart(len, ' ');
  * Narrow board: the time and line on the first row with the platform at the
  * right when it fits, then the destination and remarks wrapped beneath.
  */
-function narrowLayout(list, cols, page) {
+function narrowLayout(list, cols, page, message = '') {
   const lineCol = 6;
   const platFits = cols >= lineCol + 3 + 1 + 2;
-  const lines = [];
+  const lines = messageLines(message, cols, 6);
   for (const t of list) {
     const first = [[0, hhmm(t.time)], [lineCol, fit(t.line, cols - lineCol)]];
     if (platFits) first.push([cols - 2, right(t.plat, 2)]);
@@ -506,6 +515,7 @@ export function mount(container, live, hdrToggle, viewToggle) {
   const reduceMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
 
   let angled = angledPreference();
+  let message = '';
   let drawn = null;
   let shown = null;          // { layout, grid, shape } currently on the board
   let flips = [];
@@ -540,7 +550,7 @@ export function mount(container, live, hdrToggle, viewToggle) {
     const cols = wide ? wideCols : Math.max(MIN_COLS, Math.floor(width / NARROW_PITCH));
     const page = Math.floor(Date.now() / PAGE_MS);
     const list = upcoming(sydneyNow().minutes, 8);
-    const layout = wide ? wideLayout(list, cols, page) : narrowLayout(list, cols, page);
+    const layout = wide ? wideLayout(list, cols, page, message) : narrowLayout(list, cols, page, message);
     return { layout, grid: toGrid(layout), shape: `${angled}|${wide}|${cols}`, list };
   };
 
@@ -581,6 +591,17 @@ export function mount(container, live, hdrToggle, viewToggle) {
   });
   syncViewToggle();
   update();
+  // A message for the board, published alongside the site as message.json.
+  const fetchMessage = () => fetch(`message.json?t=${Date.now()}`, { cache: 'no-store' })
+    .then(r => (r.ok ? r.json() : {}))
+    .then(({ text = '' }) => {
+      if (text === message) return;
+      message = text;
+      update();
+    })
+    .catch(() => {});
+  fetchMessage();
+  setInterval(fetchMessage, 30000);
   // Flip on each page boundary, aligned to the wall clock.
   const tick = () => {
     update();
