@@ -1,4 +1,4 @@
-import { GLYPHS, QUARTERS, COL_W, ROW_H, ROWS } from './glyphs.js';
+import { GLYPHS, COL_X, GLYPH_W, ROWS } from './glyphs.js';
 import { sydneyNow, upcoming, hhmm } from './data.js';
 
 const SVG_NS = 'http://www.w3.org/2000/svg';
@@ -14,27 +14,25 @@ const COLS = 37;
 const TRAINS = 7;
 const LINES = TRAINS * 2;
 
-// Geometry, in SVG user units. Each character has its own panel, separated
-// from its neighbours by a thick black divider.
-const U = 2.65;                      // one glyph column unit
-const PANEL_W = 24;
-const PANEL_H = 38;
-const DIVIDER = 3.5;
-const RAIL = 10;                     // black rail between character lines
+// Geometry, in SVG user units, measured from a head-on photo of the board at
+// Brussel-Zuid. U is one glyph-grid unit (a narrow tile column is 1 U wide).
+const U = 2.6;
+const ROW = 1.65 * U;                // one tile row
+const PANEL_W = 8.9 * U;
+const PANEL_H = 18.4 * U;
+const DIVIDER = 2.55 * U;            // black gap between character panels
+const RAIL = 7.6 * U;                // black rail between character lines
 const PAD_X = 8;
 const HEAD_H = 46;
-const GLYPH_X = (PANEL_W - 8 * U) / 2;
-const GLYPH_Y = 2;
-const GAP = 0.02;                    // tiles are seamless at viewing distance
-const RADIUS = 0.6 * U;              // rounding on a glyph's outer corners
+const GLYPH_X = (PANEL_W - GLYPH_W * U) / 2;
+const GLYPH_Y = 1.8 * U;
+const GAP = 0.03 * U;                // hairline between tiles, almost invisible
+const RADIUS = 0.6 * U;              // rounding on curved corners
 
 const colX = c => PAD_X + c * (PANEL_W + DIVIDER);
 const lineY = l => HEAD_H + RAIL + l * (PANEL_H + RAIL);
 const WIDTH = colX(COLS - 1) + PANEL_W + PAD_X;
 const HEIGHT = lineY(LINES);
-
-const COL_X = COL_W.reduce((xs, w, i) => [...xs, xs[i] + w * U], [0]);
-const ROW_PX = ROW_H * U;
 
 function el(name, attrs = {}, parent) {
   const node = document.createElementNS(SVG_NS, name);
@@ -56,45 +54,40 @@ function roundedRect(x0, y0, x1, y1, [tl, tr, br, bl]) {
     (tl ? `A${f(tl)} ${f(tl)} 0 0 1 ${f(x0 + tl)} ${f(y0)}` : '') + 'Z';
 }
 
-// Quarters in clockwise order; quarter i runs from corner i to corner i + 1
-// (corners: top-left, top-right, bottom-right, bottom-left). Each run of lit
-// quarters becomes one polygon fanned from the tile centre.
-const ORDER = [QUARTERS.T, QUARTERS.R, QUARTERS.B, QUARTERS.L];
-
-function partialTile(mask, x0, y0, x1, y1) {
-  const corners = [[x0, y0], [x1, y0], [x1, y1], [x0, y1]];
-  const centre = [(x0 + x1) / 2, (y0 + y1) / 2];
-  const lit = ORDER.map(q => (mask & q) !== 0);
-  let d = '';
-  for (let s = 0; s < 4; s++) {
-    if (!lit[s] || lit[(s + 3) % 4]) continue;
-    const pts = [centre, corners[s]];
-    for (let k = s; lit[k % 4]; k++) pts.push(corners[(k + 1) % 4]);
-    d += `M${pts.map(([x, y]) => `${f(x)} ${f(y)}`).join('L')}Z`;
-  }
-  return d;
+// Every subpath winds clockwise so overlapping shapes fill rather than cancel.
+function polygon(pts) {
+  const area = pts.reduce((a, [x, y], i) => {
+    const [nx, ny] = pts[(i + 1) % pts.length];
+    return a + (x * ny - nx * y);
+  }, 0);
+  const ordered = area < 0 ? [...pts].reverse() : pts;
+  return `M${ordered.map(([x, y]) => `${f(x)} ${f(y)}`).join('L')}Z`;
 }
 
-function glyphPath(grid) {
-  const at = (r, c) => (r >= 0 && r < ROWS && c >= 0 && c < 5 ? grid[r][c] : 0);
+const CORNERS = ['TL', 'TR', 'BR', 'BL'];
+
+function glyphPath({ rows, round = {}, polys = [] }) {
+  const lit = (r, c) => r >= 0 && r < ROWS && c >= 0 && c < 5 && rows[r][c] !== '.';
   let d = '';
   for (let r = 0; r < ROWS; r++) {
     for (let c = 0; c < 5; c++) {
-      const mask = grid[r][c];
-      if (!mask) continue;
-      const x0 = COL_X[c] + GAP, x1 = COL_X[c + 1] - GAP;
-      const y0 = r * ROW_PX + GAP, y1 = (r + 1) * ROW_PX - GAP;
-      if (mask === 15) {
-        const up = at(r - 1, c), down = at(r + 1, c), left = at(r, c - 1), right = at(r, c + 1);
-        const max = Math.min(y1 - y0, x1 - x0) / 2;
-        d += roundedRect(x0, y0, x1, y1, [
-          !up && !left, !up && !right, !down && !right, !down && !left,
-        ].map(round => (round ? Math.min(RADIUS, max) : 0)));
-      } else {
-        d += partialTile(mask, x0, y0, x1, y1);
-      }
+      const code = rows[r][c];
+      if (code === '.') continue;
+      const x0 = COL_X[c] * U + GAP, x1 = COL_X[c + 1] * U - GAP;
+      const y0 = r * ROW + GAP, y1 = (r + 1) * ROW - GAP;
+      if (code === 'd') { d += polygon([[x1, y0], [x1, y1], [x0, y1]]); continue; }
+      if (code === 'a') { d += polygon([[x0, y0], [x1, y0], [x0, y1]]); continue; }
+      const free = [
+        !lit(r - 1, c) && !lit(r, c - 1), !lit(r - 1, c) && !lit(r, c + 1),
+        !lit(r + 1, c) && !lit(r, c + 1), !lit(r + 1, c) && !lit(r, c - 1),
+      ];
+      const explicit = round[`${r},${c}`] || '';
+      const max = Math.min(y1 - y0, x1 - x0) / 2;
+      d += roundedRect(x0, y0, x1, y1, CORNERS.map((k, i) =>
+        ((code === 'o' && free[i]) || explicit.includes(k) ? Math.min(RADIUS, max) : 0)));
     }
   }
+  for (const poly of polys) d += polygon(poly.map(([x, y]) => [x * U, y * ROW]));
   return d;
 }
 
